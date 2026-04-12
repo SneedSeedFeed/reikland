@@ -63,6 +63,14 @@ impl MarshalTypeByte {
     }
 }
 
+impl TryFrom<u8> for MarshalTypeByte {
+    type Error = InvalidTypeByte;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        MarshalTypeByte::try_from_u8(value).ok_or(InvalidTypeByte { byte: value })
+    }
+}
+
 #[derive(Debug, Clone, Copy, thiserror::Error)]
 #[error("{} is not a valid marshal type byte", *byte as char)]
 pub struct InvalidTypeByte {
@@ -73,7 +81,6 @@ impl TryFromCursor<'_> for MarshalTypeByte {
     type Error = InvalidTypeByte;
 
     fn try_from_cursor(cursor: &mut Cursor<'_>) -> Option<Result<Self, Self::Error>> {
-        let byte = cursor.take_1()?;
-        Some(MarshalTypeByte::try_from_u8(byte).ok_or(InvalidTypeByte { byte }))
+        cursor.take_1().map(TryFrom::try_from)
     }
 }
