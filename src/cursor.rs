@@ -9,8 +9,7 @@ impl<'a> Cursor<'a> {
         let slice = self.slice.first_chunk::<N>();
 
         if slice.is_some() {
-            let (_, rem) = self.slice.split_at(N);
-            self.slice = rem;
+            self.slice = self.slice.split_at(N).1;
         }
 
         slice
@@ -24,6 +23,14 @@ impl<'a> Cursor<'a> {
             self.slice = rem;
             Some(split)
         }
+    }
+
+    pub const fn take_1(&mut self) -> Option<u8> {
+        let val = self.slice.first().copied();
+        if val.is_some() {
+            self.slice = self.slice.split_at(1).1;
+        };
+        val
     }
 
     pub fn take<T>(&mut self) -> Option<T>
