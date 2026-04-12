@@ -4,7 +4,7 @@ use num_bigint::{BigInt, Sign};
 
 use crate::{
     cursor::{Cursor, FromCursor, TryFromCursor},
-    types::fixnum::FixNum,
+    types::fixnum::FixNumLen,
 };
 
 #[derive(Debug, Clone, Copy, thiserror::Error)]
@@ -19,7 +19,7 @@ impl IncorrectSign {
     }
 }
 
-impl TryFromCursor for Sign {
+impl TryFromCursor<'_> for Sign {
     type Error = IncorrectSign;
 
     fn try_from_cursor(cursor: &mut Cursor<'_>) -> Option<Result<Self, Self::Error>> {
@@ -31,7 +31,7 @@ impl TryFromCursor for Sign {
     }
 }
 
-#[derive(Debug, Clone, Copy, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error)]
 #[error("{kind}")]
 pub struct ParseBigIntError {
     kind: ParseBigIntErrorKind,
@@ -59,25 +59,12 @@ macro_rules! tri_opt {
     };
 }
 
-macro_rules! tri {
-    ($expr:expr) => {
-        match $expr {
-            Ok(ok) => ok,
-            Err(e) => {
-                return Some(Err(ParseBigIntError {
-                    kind: ParseBigIntErrorKind::from(e),
-                }))
-            }
-        }
-    };
-}
-
-impl TryFromCursor for num_bigint::BigInt {
+impl TryFromCursor<'_> for num_bigint::BigInt {
     type Error = ParseBigIntError;
 
     fn try_from_cursor(cursor: &mut Cursor<'_>) -> Option<Result<Self, Self::Error>> {
         let sign = tri_opt!(cursor.try_take::<Sign>());
-        let len = tri!(usize::try_from(cursor.take::<FixNum>()?.into_inner())) * 2;
+        let len = tri_opt!(cursor.try_take::<FixNumLen>()).into_inner() * 2;
         let bignum_bytes = cursor.take_n(len)?;
 
         Some(Ok(BigInt::from_bytes_le(sign, bignum_bytes)))

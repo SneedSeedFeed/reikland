@@ -1,5 +1,8 @@
+use std::num::TryFromIntError;
+
 use crate::cursor::{Cursor, FromCursor, TryFromCursor};
 
+/// Ruby fixnum
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct FixNum(i32);
 
@@ -19,7 +22,7 @@ impl From<i32> for FixNum {
     }
 }
 
-impl TryFromCursor for FixNum {
+impl TryFromCursor<'_> for FixNum {
     type Error = std::convert::Infallible;
 
     fn try_from_cursor(cursor: &mut Cursor<'_>) -> Option<Result<Self, Self::Error>> {
@@ -77,5 +80,30 @@ impl TryFromCursor for FixNum {
                 Some(Ok(FixNum((signed - (signed.signum() * 5)) as i32)))
             }
         }
+    }
+}
+
+/// Ruby fixnum, converted into a usize
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct FixNumLen(usize);
+
+impl FixNumLen {
+    pub fn new(len: usize) -> Self {
+        Self(len)
+    }
+
+    pub fn into_inner(self) -> usize {
+        self.0
+    }
+}
+
+impl TryFromCursor<'_> for FixNumLen {
+    type Error = TryFromIntError;
+
+    fn try_from_cursor(cursor: &mut Cursor<'_>) -> Option<Result<Self, Self::Error>> {
+        i32::try_from_cursor(cursor)
+            .map(Result::unwrap)
+            .map(usize::try_from)
+            .map(|o| o.map(FixNumLen))
     }
 }

@@ -5,7 +5,7 @@ pub struct Cursor<'a> {
 }
 
 impl<'a> Cursor<'a> {
-    pub const fn take_const<const N: usize>(&mut self) -> Option<&[u8; N]> {
+    pub const fn take_const<const N: usize>(&mut self) -> Option<&'a [u8; N]> {
         let slice = self.slice.first_chunk::<N>();
 
         if slice.is_some() {
@@ -15,7 +15,7 @@ impl<'a> Cursor<'a> {
         slice
     }
 
-    pub const fn take_n(&mut self, n: usize) -> Option<&[u8]> {
+    pub const fn take_n(&mut self, n: usize) -> Option<&'a [u8]> {
         if self.slice.len() < n {
             None
         } else {
@@ -35,14 +35,14 @@ impl<'a> Cursor<'a> {
 
     pub fn take<T>(&mut self) -> Option<T>
     where
-        T: FromCursor,
+        T: FromCursor<'a>,
     {
         T::from_cursor(self)
     }
 
-    pub fn try_take<T>(&mut self) -> Option<Result<T, <T as TryFromCursor>::Error>>
+    pub fn try_take<T>(&mut self) -> Option<Result<T, <T as TryFromCursor<'a>>::Error>>
     where
-        T: TryFromCursor,
+        T: TryFromCursor<'a>,
     {
         T::try_from_cursor(self)
     }
@@ -57,15 +57,15 @@ impl<'a> Cursor<'a> {
 }
 
 /// Indicates a type may be constructed from [`Cursor`], where the only error would be not enough bytes (encoded as [None])
-pub trait FromCursor: Sized + TryFromCursor {
-    fn from_cursor(cursor: &mut Cursor<'_>) -> Option<Self>;
+pub trait FromCursor<'a>: Sized + TryFromCursor<'a> {
+    fn from_cursor(cursor: &mut Cursor<'a>) -> Option<Self>;
 }
 
-impl<T> FromCursor for T
+impl<'a, T> FromCursor<'a> for T
 where
-    T: TryFromCursor<Error = std::convert::Infallible>,
+    T: TryFromCursor<'a, Error = std::convert::Infallible>,
 {
-    fn from_cursor(cursor: &mut Cursor<'_>) -> Option<Self> {
+    fn from_cursor(cursor: &mut Cursor<'a>) -> Option<Self> {
         T::try_from_cursor(cursor).map(Result::unwrap)
     }
 }
@@ -74,10 +74,11 @@ where
 macro_rules! cursor_numeric_impls {
     ([$($ty:ty),*]) => {
         $(
-            impl TryFromCursor for $ty {
+            impl TryFromCursor<'_> for $ty {
                 type Error = std::convert::Infallible;
 
-                fn try_from_cursor(cursor: &mut Cursor<'_>) -> Option<Result<$ty, std::convert::Infallible>> {
+                fn try_from_cursor(cursor: &mut Cursor<'_>) -> Option<Result<$ty, std::convert::Infallible>>
+                {
                     const SIZE: usize = std::mem::size_of::<$ty>();
                     cursor.take_const::<SIZE>().copied().map(<$ty>::from_le_bytes).map(Ok)
                 }
@@ -88,17 +89,17 @@ macro_rules! cursor_numeric_impls {
 
 cursor_numeric_impls!([u16, u32, u64, u128, i16, i32, i64, i128]);
 
-impl TryFromCursor for u8 {
+impl TryFromCursor<'_> for u8 {
     type Error = std::convert::Infallible;
 
-    fn try_from_cursor(cursor: &mut Cursor<'_>) -> Option<Result<Self, Self::Error>> {
+    fn try_from_cursor<'a>(cursor: &mut Cursor<'a>) -> Option<Result<Self, Self::Error>> {
         let (byte, rem) = cursor.slice.split_first()?;
         cursor.slice = rem;
         Some(Ok(*byte))
     }
 }
 
-impl TryFromCursor for i8 {
+impl TryFromCursor<'_> for i8 {
     type Error = std::convert::Infallible;
 
     fn try_from_cursor(cursor: &mut Cursor<'_>) -> Option<Result<Self, Self::Error>> {
@@ -109,8 +110,8 @@ impl TryFromCursor for i8 {
 }
 
 /// Indicates a type may be fallibly constructed from a [`Cursor`]. Like [`FromCursor`], [`None`] indicates the cursor ran out of bytes
-pub trait TryFromCursor: Sized {
+pub trait TryFromCursor<'a>: Sized {
     type Error: std::error::Error;
 
-    fn try_from_cursor(cursor: &mut Cursor<'_>) -> Option<Result<Self, Self::Error>>;
+    fn try_from_cursor(cursor: &mut Cursor<'a>) -> Option<Result<Self, Self::Error>>;
 }
