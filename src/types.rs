@@ -1,2 +1,2 @@
-pub mod bigint;
+pub mod bignum;
 pub mod fixnum;
