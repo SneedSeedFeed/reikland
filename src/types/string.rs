@@ -18,6 +18,10 @@ impl RbStr {
     pub fn from_slice(slice: &[u8]) -> &RbStr {
         slice.into()
     }
+
+    pub fn as_slice(&self) -> &[u8] {
+        &self.inner
+    }
 }
 
 // This implementation is ripped out of the source code for `ByteStr` on nightly

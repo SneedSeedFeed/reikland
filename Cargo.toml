@@ -4,5 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+lexical-parse-float = "1.0.6"
 num-bigint = "0.4.6"
 thiserror = "2.0.18"
