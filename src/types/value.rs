@@ -51,6 +51,7 @@ pub enum MarshalValue<'a> {
     },
     Class(&'a RbStr),
     Module(&'a RbStr),
+    ClassOrModule(&'a RbStr),
     UserDefined {
         class: SymbolIdx,
         data: &'a [u8],

@@ -101,9 +101,9 @@ impl TryFromCursor<'_> for FixNumLen {
     type Error = TryFromIntError;
 
     fn try_from_cursor(cursor: &mut Cursor<'_>) -> Option<Result<Self, Self::Error>> {
-        i32::try_from_cursor(cursor)
+        FixNum::try_from_cursor(cursor)
             .map(Result::unwrap)
-            .map(usize::try_from)
+            .map(|f| usize::try_from(f.inner()))
             .map(|o| o.map(FixNumLen))
     }
 }

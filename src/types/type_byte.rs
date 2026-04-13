@@ -30,6 +30,12 @@ pub enum MarshalTypeByte {
     ClassOrModule = b'M',
 }
 
+impl std::fmt::Display for MarshalTypeByte {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        (*self as u8 as char).fmt(f)
+    }
+}
+
 impl MarshalTypeByte {
     pub fn try_from_u8(byte: u8) -> Option<Self> {
         match byte {
