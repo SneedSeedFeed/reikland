@@ -64,7 +64,7 @@ impl TryFromCursor<'_> for num_bigint::BigInt {
 
     fn try_from_cursor(cursor: &mut Cursor<'_>) -> Option<Result<Self, Self::Error>> {
         let sign = tri_opt!(cursor.try_take::<Sign>());
-        let len = tri_opt!(cursor.try_take::<FixNumLen>()).into_inner() * 2;
+        let len = tri_opt!(cursor.try_take::<FixNumLen>()).inner() * 2;
         let bignum_bytes = cursor.take_n(len)?;
 
         Some(Ok(BigInt::from_bytes_le(sign, bignum_bytes)))

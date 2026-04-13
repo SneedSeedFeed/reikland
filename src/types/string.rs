@@ -139,7 +139,7 @@ impl<'a> TryFromCursor<'a> for &'a RbStr {
     type Error = ParseRbStrError;
 
     fn try_from_cursor(cursor: &mut Cursor<'a>) -> Option<Result<&'a RbStr, Self::Error>> {
-        let len = tri_opt!(cursor.try_take::<FixNumLen>()).into_inner();
+        let len = tri_opt!(cursor.try_take::<FixNumLen>()).inner();
         cursor.take_n(len).map(RbStr::from_slice).map(Ok)
     }
 }

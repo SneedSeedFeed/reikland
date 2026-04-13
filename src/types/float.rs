@@ -11,7 +11,7 @@ impl RbFloat {
         Self(float)
     }
 
-    pub fn into_inner(self) -> f64 {
+    pub fn inner(self) -> f64 {
         self.0
     }
 }

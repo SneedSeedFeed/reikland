@@ -1,1 +1,4 @@
 /target
+
+# local copy of https://docs.ruby-lang.org/en/2.1.0/marshal_rdoc.html
+/marshal - *

@@ -11,7 +11,7 @@ impl FixNum {
         Self(val)
     }
 
-    pub fn into_inner(self) -> i32 {
+    pub fn inner(self) -> i32 {
         self.0
     }
 }
@@ -92,7 +92,7 @@ impl FixNumLen {
         Self(len)
     }
 
-    pub fn into_inner(self) -> usize {
+    pub fn inner(self) -> usize {
         self.0
     }
 }
