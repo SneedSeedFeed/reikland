@@ -14,5 +14,5 @@ pub use {
     mixed_key::{MixedKey, MixedKeyRef},
     rb_object::{RbObject, RbStruct},
     regex::RbRegex,
-    transparent::Transparent,
+    transparent::{Transparent, TransparentOpt},
 };

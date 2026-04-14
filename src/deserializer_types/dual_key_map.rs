@@ -1,4 +1,6 @@
-use std::{collections::HashMap, hash::Hash, marker::PhantomData, mem::MaybeUninit};
+use std::{
+    collections::HashMap, hash::Hash, iter::FilterMap, marker::PhantomData, mem::MaybeUninit,
+};
 
 use bit_vec::BitVec;
 use serde::{
@@ -322,6 +324,74 @@ where
         }
 
         deserializer.deserialize_map(DualKeyVecVisitor(PhantomData))
+    }
+}
+
+/// Deserializes a map/hash in ruby that has a [`MixedKey`][super::mixed_key::MixedKey] key, discarding the [`MixedKey::Str`][super::mixed_key::MixedKey::Str] keys.
+/// Does not verify that discarded values aren't unique. DOES maintain the declared index from the format and permits holes.
+#[derive(Debug, Clone, Serialize)]
+#[repr(transparent)]
+pub struct DualKeyVecSparseHoley<T>(pub Vec<Option<T>>);
+
+impl<'de, T> serde::Deserialize<'de> for DualKeyVecSparseHoley<T>
+where
+    T: Deserialize<'de>,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct DualKeyVecSparseHoleyVisitor<T>(PhantomData<fn() -> T>);
+
+        impl<'de, T> Visitor<'de> for DualKeyVecSparseHoleyVisitor<T>
+        where
+            T: Deserialize<'de>,
+        {
+            type Value = DualKeyVecSparseHoley<T>;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a map with mixed string/integer keys")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                let mut vec = map
+                    .size_hint()
+                    .map(Vec::<Option<T>>::with_capacity)
+                    .unwrap_or_default();
+
+                while let Some(key) = map.next_key::<MixedKeyRef<'de>>()? {
+                    let MixedKeyRef::Int(key) = key else {
+                        map.next_value::<IgnoredAny>()?;
+                        continue;
+                    };
+                    let index = usize::try_from(key).map_err(|_| {
+                        serde::de::Error::custom(format_args!(
+                            "key '{key}' should be a positive integer"
+                        ))
+                    })?;
+                    let value = map.next_value::<T>()?;
+                    if index >= vec.len() {
+                        vec.resize_with(index + 1, || None);
+                    }
+                    vec[index] = Some(value);
+                }
+
+                Ok(DualKeyVecSparseHoley(vec))
+            }
+        }
+
+        deserializer.deserialize_map(DualKeyVecSparseHoleyVisitor(PhantomData))
+    }
+}
+
+pub type SparseHoleyIter<'a, T> =
+    FilterMap<std::slice::Iter<'a, Option<T>>, fn(&Option<T>) -> Option<&T>>;
+impl<T> DualKeyVecSparseHoley<T> {
+    pub fn iter_filled(&self) -> SparseHoleyIter<'_, T> {
+        self.0.iter().filter_map(|s| s.as_ref())
     }
 }
 
