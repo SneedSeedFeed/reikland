@@ -9,4 +9,11 @@ readme = "README.md"
 [dependencies]
 lexical-parse-float = "1.0.6"
 num-bigint = "0.4.6"
+phf = { version = "0.13.1", features = ["macros"] }
+serde = "1.0.228"
+str_enum = { version = "0.3.2", features = ["phf", "serde"] }
+strum = { version = "0.28.0", features = ["derive"] }
 thiserror = "2.0.18"
+
+[dev-dependencies]
+serde = { version = "1.0.228", features = ["derive"] }

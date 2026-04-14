@@ -225,20 +225,32 @@ fn parse_value<'a>(cursor: &mut Cursor<'a>) -> Result<ObjectIdx, ParseError> {
         }
 
         MarshalTypeByte::Instance => {
+            // `I` modifies the inner value inplace (adding ivars), so the object ref belongs to the combined value, not to the inner val separately.
+            // if the inner value registered a ref, we replace it to point to the instance node instead.
+            let ref_count_before = cursor.object_ref_count();
             let inner = parse_value(cursor)?;
             let ivars = parse_ivars(cursor)?;
 
             let obj_idx = cursor.push_object(MarshalValue::Instance { inner, ivars });
-            cursor.push_object_ref(obj_idx);
+            if cursor.object_ref_count() > ref_count_before {
+                cursor.replace_last_object_ref(obj_idx);
+            } else {
+                cursor.push_object_ref(obj_idx);
+            }
             Ok(obj_idx)
         }
 
         MarshalTypeByte::Extended => {
             let module = parse_symbol(cursor)?;
+            let ref_count_before = cursor.object_ref_count();
             let inner = parse_value(cursor)?;
 
             let obj_idx = cursor.push_object(MarshalValue::Extended { module, inner });
-            cursor.push_object_ref(obj_idx);
+            if cursor.object_ref_count() > ref_count_before {
+                cursor.replace_last_object_ref(obj_idx);
+            } else {
+                cursor.push_object_ref(obj_idx);
+            }
             Ok(obj_idx)
         }
 
@@ -320,10 +332,15 @@ fn parse_value<'a>(cursor: &mut Cursor<'a>) -> Result<ObjectIdx, ParseError> {
 
         MarshalTypeByte::UserString => {
             let class = parse_symbol(cursor)?;
+            let ref_count_before = cursor.object_ref_count();
             let inner = parse_value(cursor)?;
 
             let obj_idx = cursor.push_object(MarshalValue::UserString { class, inner });
-            cursor.push_object_ref(obj_idx);
+            if cursor.object_ref_count() > ref_count_before {
+                cursor.replace_last_object_ref(obj_idx);
+            } else {
+                cursor.push_object_ref(obj_idx);
+            }
             Ok(obj_idx)
         }
     }

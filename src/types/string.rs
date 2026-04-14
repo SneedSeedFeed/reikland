@@ -109,6 +109,14 @@ impl From<&[u8]> for &RbStr {
     }
 }
 
+impl<'a> TryFrom<&'a RbStr> for &'a str {
+    type Error = std::str::Utf8Error;
+
+    fn try_from(value: &RbStr) -> Result<&str, Self::Error> {
+        std::str::from_utf8(value)
+    }
+}
+
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("{kind}")]
 pub struct ParseRbStrError {

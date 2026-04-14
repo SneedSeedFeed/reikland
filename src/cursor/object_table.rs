@@ -54,6 +54,22 @@ impl<'a> ObjectTable<'a> {
         self.object_refs.push(idx);
     }
 
+    /// How many object references are currently registered.
+    pub fn object_ref_count(&self) -> usize {
+        self.object_refs.len()
+    }
+
+    /// Replace the most recently pushed object reference with a new target.
+    ///
+    /// # Panics
+    /// Panics if the object reference table is empty.
+    pub fn replace_last_object_ref(&mut self, idx: ObjectIdx) {
+        *self
+            .object_refs
+            .last_mut()
+            .expect("no object ref to replace") = idx;
+    }
+
     /// Resolve a marshal '@' reference index into an [`ObjectIdx`]
     pub fn get_by_ref(&self, ref_idx: usize) -> Option<ObjectIdx> {
         self.object_refs.get(ref_idx).copied()

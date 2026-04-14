@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use num_bigint::BigInt;
 
 use crate::cursor::{
@@ -11,7 +13,8 @@ use super::string::RbStr;
 ///
 /// Types reference children by [`ObjectIdx`] into the [`ObjectTable`][crate::cursor::object_table::ObjectTable].
 /// Symbol references use [`SymbolIdx`] into the [`SymbolTable`][crate::cursor::symbol_table::SymbolTable].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 pub enum MarshalValue<'a> {
     Nil,
     True,
@@ -67,5 +70,72 @@ pub enum MarshalValue<'a> {
     Data {
         class: SymbolIdx,
         inner: ObjectIdx,
+    },
+}
+
+impl<'a> MarshalValue<'a> {
+    pub fn as_snake_case(&self) -> &'static str {
+        self.into()
+    }
+}
+
+// todo: wire this up
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+enum OwnedMarshalValue {
+    Nil,
+    True,
+    False,
+    Fixnum(i32),
+    Float(f64),
+    Bignum(BigInt),
+    SymbolLink(SymbolIdx),
+    Symbol(Arc<[u8]>),
+    String(Arc<[u8]>),
+    Regex {
+        pattern: Arc<[u8]>,
+        flags: u8,
+    },
+    Array(Vec<ObjectIdx>),
+    Hash(Vec<(Arc<OwnedMarshalValue>, Arc<OwnedMarshalValue>)>),
+    HashDefault {
+        pairs: Vec<(Arc<OwnedMarshalValue>, Arc<OwnedMarshalValue>)>,
+        default: Arc<OwnedMarshalValue>,
+    },
+    ObjectRef(ObjectRefIdx),
+    Object {
+        class: SymbolIdx,
+        ivars: Vec<(SymbolIdx, Arc<OwnedMarshalValue>)>,
+    },
+    Struct {
+        name: SymbolIdx,
+        members: Vec<(SymbolIdx, Arc<OwnedMarshalValue>)>,
+    },
+    Instance {
+        inner: Arc<OwnedMarshalValue>,
+        ivars: Vec<(SymbolIdx, Arc<OwnedMarshalValue>)>,
+    },
+    Extended {
+        module: SymbolIdx,
+        inner: Arc<OwnedMarshalValue>,
+    },
+    Class(Arc<[u8]>),
+    Module(Arc<[u8]>),
+    ClassOrModule(Arc<[u8]>),
+    UserDefined {
+        class: SymbolIdx,
+        data: Vec<u8>,
+    },
+    UserMarshal {
+        class: SymbolIdx,
+        inner: Arc<OwnedMarshalValue>,
+    },
+    UserString {
+        class: SymbolIdx,
+        inner: Arc<OwnedMarshalValue>,
+    },
+    Data {
+        class: SymbolIdx,
+        inner: Arc<OwnedMarshalValue>,
     },
 }

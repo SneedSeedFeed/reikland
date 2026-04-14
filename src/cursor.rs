@@ -104,6 +104,16 @@ impl<'a> Cursor<'a> {
         self.objects.push_object_ref(idx);
     }
 
+    /// How many object references are currently registered.
+    pub fn object_ref_count(&self) -> usize {
+        self.objects.object_ref_count()
+    }
+
+    /// Replace the most recently pushed object reference with a new target.
+    pub fn replace_last_object_ref(&mut self, idx: ObjectIdx) {
+        self.objects.replace_last_object_ref(idx);
+    }
+
     /// Resolve a marshal `@` reference to an [`ObjectIdx`].
     pub fn get_object_ref(&self, ref_idx: usize) -> Option<ObjectIdx> {
         self.objects.get_by_ref(ref_idx)
