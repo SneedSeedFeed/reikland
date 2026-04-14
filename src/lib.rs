@@ -1,5 +1,6 @@
 pub mod cursor;
 pub mod deserializer;
+pub mod deserializer_types;
 pub mod marshal;
 pub mod types;
 pub mod version_number;
