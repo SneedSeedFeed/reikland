@@ -1,5 +1,5 @@
 # reikland
-A ruby marshal parser and deserializer that's compatible with the normal `serde::Deserialize` trait. If you don't need that compatibility you probably want the wonderful [alox-48](https://crates.io/crates/alox-48)
+A ruby marshal parser and deserializer that's compatible with the normal `serde::Deserialize` trait. If you don't need that compatibility you probably want the wonderful [alox-48](https://crates.io/crates/alox-48) which was the inspiration to try this in the first place.
 
 ## Read this before deciding to use this crate so you understand the why and how to use it properly
 I found the marshal format to have a good degree of desync between the "intended" and "literal" ways to deserialize a value in Rust. For example: An instance variable is basically just a `(T, HashMap<Symbol, Value>)` but in many cases you (the lovely person reading this) just want `T`. However if I just made instance variables deserialize to `T` we are losing information so I made the executive decision to provide a collection of helpful wrappers to get at `T` with less pain.
@@ -61,7 +61,17 @@ fn parse_species<'a>(data: &'a reikland::marshal::MarshalData<'a>) -> Vec<RbObje
 ```
 
 ### I don't like what you've done with the place
-~~me neither~~ That's fine! The parsing logic is exposed via `reikland::marshal::parse` which is used internally by the `serde` implementation (it's a two phase job) so if you want to handle things yourself from the raw data go nuts.
+~~me neither~~ That's fine! The parsing logic is exposed via `reikland::marshal::parse` which is used internally by the `serde` implementation so if you want to handle things yourself from the raw data go nuts. I parse the entire marshal object first before deserializing since it was simpler for me, and everything is stored flat with no scary recursive types.
+
+```rust
+#[derive(Debug)]
+pub struct MarshalData<'a> {
+    pub version: VersionNumber,
+    pub symbols: SymbolTable<'a>,
+    pub objects: ObjectTable<'a>,
+    pub root: ObjectIdx,
+}
+```
 
 #### Why does the crate's name suck?
 I was playing a lot of Total War Warhammer 3 when I first decided to make it. Something something marshal my men, summon the elector counts...
