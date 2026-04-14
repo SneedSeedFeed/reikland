@@ -65,6 +65,63 @@ where
     }
 }
 
+/// Deserializes a map/hash in ruby that has a [`MixedKey`][super::mixed_key::MixedKey] key, discarding the [MixedKey::Str][super::mixed_key::MixedKey::Str] keys.
+/// Does not verify that discarded values aren't unique.
+#[derive(Debug, Clone, Serialize)]
+#[repr(transparent)]
+pub struct DualKeyMapInt<K, V>(pub HashMap<K, V>);
+
+impl<'de, K, V> serde::Deserialize<'de> for DualKeyMapInt<K, V>
+where
+    K: From<i32> + Eq + Hash,
+    V: Deserialize<'de>,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct DualKeyMapIntVisitor<K, V>(PhantomData<fn() -> (K, V)>);
+
+        impl<'de, K, V> Visitor<'de> for DualKeyMapIntVisitor<K, V>
+        where
+            K: From<i32> + Eq + Hash,
+            V: Deserialize<'de>,
+        {
+            type Value = DualKeyMapInt<K, V>;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a map with mixed string/integer keys")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut hash: HashMap<K, V> = map
+                    .size_hint()
+                    .map(HashMap::with_capacity)
+                    .unwrap_or_default();
+
+                while let Some(key) = map.next_key::<MixedKeyRef<'de>>()? {
+                    match key {
+                        MixedKeyRef::Int(i) => {
+                            let key = K::from(i);
+                            hash.insert(key, map.next_value()?);
+                        }
+                        MixedKeyRef::Str(_) => {
+                            map.next_value::<IgnoredAny>()?;
+                        }
+                    }
+                }
+
+                Ok(DualKeyMapInt(hash))
+            }
+        }
+
+        deserializer.deserialize_map(DualKeyMapIntVisitor(PhantomData))
+    }
+}
+
 // this unsafe bullshit was for fun not practicality, cant wait for it to bite me in the ass
 struct SparseVecBuilder<T> {
     members: Vec<MaybeUninit<T>>,

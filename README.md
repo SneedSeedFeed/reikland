@@ -1,2 +1,64 @@
 # reikland
-marshal my men, summon the elector counts, tell the fat green bastard to stop harassing me, build more grenadiers on horseback
+A ruby marshal parser and deserializer that's compatible with the normal `serde::Deserialize` trait. If you don't need that compatibility you probably want the wonderful [alox-48](https://crates.io/crates/alox-48)
+
+## Read this before deciding to use this crate so you understand the why and how to use it properly
+I found the marshal format to have a good degree of desync between the "intended" and "literal" ways to deserialize a value in Rust. For example: An instance variable is basically just a `(T, HashMap<Symbol, Value>)` but in many cases you (the lovely person reading this) just want `T`. However if I just made instance variables deserialize to `T` we are losing information so I made the executive decision to provide a collection of helpful wrappers to get at `T` with less pain.
+
+```rust
+struct Transparent<T>(pub T); // Will deserialize T, but if it runs into a sequence (such as an ivar) it will try to take the first member as T
+
+struct TransparentOpt<T, O>(pub T, pub Option<O>) // Same as Transparent<T> but also captures the second value of a sequence if possible
+```
+
+In practice this looks like
+```rust
+// make your types as per usual
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Deserialize)]
+struct Species<'a> {
+    #[serde(rename = "@id")]
+    id: &'a str,
+    #[serde(rename = "@id_number")]
+    id_number: i32,
+    #[serde(rename = "@species")]
+    species: &'a str,
+    #[serde(rename = "@form")]
+    form: i32,
+    #[serde(rename = "@real_name")]
+    real_name: &'a str,
+    #[serde(rename = "@real_category")]
+    real_category: &'a str,
+    #[serde(rename = "@type1")]
+    type1: &'a str,
+    #[serde(rename = "@type2")]
+    type2: &'a str,
+    #[serde(rename = "@base_stats")]
+    base_stats: BaseStats,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
+struct BaseStats {
+    #[serde(rename = "HP")]
+    hp: u16,
+    #[serde(rename = "ATTACK")]
+    atk: u16,
+    #[serde(rename = "DEFENSE")]
+    def: u16,
+    #[serde(rename = "SPECIAL_ATTACK")]
+    spa: u16,
+    #[serde(rename = "SPECIAL_DEFENSE")]
+    spd: u16,
+    #[serde(rename = "SPEED")]
+    spe: u16,
+}
+
+fn parse_species<'a>(data: &'a reikland::marshal::MarshalData<'a>) -> Vec<RbObject<Species<'a>>> {
+    // use `reikland::deserializer_types` to help cut through the chaff
+    // DualKeyVec takes a Map<I32OrString, Value> and just pushes the i32 keys into a vec
+    let db: DualKeyVec<RbObject<Species>> =
+        deserializer::from_marshal_data(data).expect("failed to deserialize species");
+    db.0
+}
+```
+
+#### Why does the crate's name suck?
+I was playing a lot of Total War Warhammer 3 when I first decided to make it. Something something marshal my men, summon the elector counts...

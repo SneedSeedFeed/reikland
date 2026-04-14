@@ -106,15 +106,19 @@ macro_rules! deserialize_int {
     ($self:ident, $visitor:ident, $method:ident, $visit:ident, $ty:ty) => {
         match $self.resolve($self.idx)? {
             MarshalValue::Fixnum(n) => {
-                let v: $ty = (*n).try_into().map_err(|_| ErrorKind::IntegerOverflow {
+                let v: $ty = (*n).try_into().map_err(|_| ErrorKind::IntegerOverflowI32 {
                     target_type: stringify!($ty),
+                    value: *n,
                 })?;
                 $visitor.$visit(v)
             }
             MarshalValue::Bignum(big) => {
-                let v: $ty = big.try_into().map_err(|_| ErrorKind::IntegerOverflow {
-                    target_type: stringify!($ty),
-                })?;
+                let v: $ty = big
+                    .try_into()
+                    .map_err(|_| ErrorKind::IntegerOverflowBigInt {
+                        target_type: stringify!($ty),
+                        value: big.clone(),
+                    })?;
                 $visitor.$visit(v)
             }
             other => Err(type_mismatch("integer", other)),
@@ -462,12 +466,12 @@ mod tests {
 
     use crate::{
         deserializer::{Error, from_marshal_data},
-        marshal::{self, MarshalData},
-        types::{
-            encoding::RubyEncoding,
+        deserializer_types::{
             ivar::{Ivar, WithEncoding},
             rb_object::RbObject,
         },
+        marshal::{self, MarshalData},
+        types::encoding::RubyEncoding,
     };
 
     // Helper to parse and deserialize

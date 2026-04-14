@@ -3,7 +3,7 @@ use std::ops::{Deref, DerefMut};
 use serde::de::{Deserializer, MapAccess, SeqAccess, Visitor};
 use std::marker::PhantomData;
 
-use super::encoding::RubyEncoding;
+use crate::types::encoding::RubyEncoding;
 
 /// Type for deserializing Ruby Instance variable wrappers.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
