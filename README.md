@@ -60,5 +60,8 @@ fn parse_species<'a>(data: &'a reikland::marshal::MarshalData<'a>) -> Vec<RbObje
 }
 ```
 
+### I don't like what you've done with the place
+~~me neither~~ That's fine! The parsing logic is exposed via `reikland::marshal::parse` which is used internally by the `serde` implementation (it's a two phase job) so if you want to handle things yourself from the raw data go nuts.
+
 #### Why does the crate's name suck?
 I was playing a lot of Total War Warhammer 3 when I first decided to make it. Something something marshal my men, summon the elector counts...
