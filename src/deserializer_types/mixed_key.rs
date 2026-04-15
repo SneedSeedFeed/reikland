@@ -1,4 +1,4 @@
-use serde::{Deserialize, Deserializer, de::Visitor};
+use serde_core::{Deserialize, Deserializer, de::Visitor};
 
 /// Decently common key used in marshal data. Captures both fixnum and utf-8 str keys (if there's non utf8 in your keys idk man)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -7,10 +7,10 @@ pub enum MixedKeyRef<'a> {
     Str(&'a str),
 }
 
-impl<'a> serde::Serialize for MixedKeyRef<'a> {
+impl<'a> serde_core::Serialize for MixedKeyRef<'a> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
-        S: serde::Serializer,
+        S: serde_core::Serializer,
     {
         match self {
             MixedKeyRef::Int(i) => i.serialize(serializer),
@@ -29,11 +29,11 @@ impl<'de> Deserialize<'de> for MixedKeyRef<'de> {
                 f.write_str("an integer or string")
             }
 
-            fn visit_i32<E: serde::de::Error>(self, v: i32) -> Result<Self::Value, E> {
+            fn visit_i32<E: serde_core::de::Error>(self, v: i32) -> Result<Self::Value, E> {
                 Ok(MixedKeyRef::Int(v))
             }
 
-            fn visit_borrowed_str<E: serde::de::Error>(
+            fn visit_borrowed_str<E: serde_core::de::Error>(
                 self,
                 v: &'de str,
             ) -> Result<Self::Value, E> {
@@ -79,10 +79,10 @@ impl<'a> From<&'a MixedKey> for MixedKeyRef<'a> {
     }
 }
 
-impl serde::Serialize for MixedKey {
+impl serde_core::Serialize for MixedKey {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
-        S: serde::Serializer,
+        S: serde_core::Serializer,
     {
         match self {
             MixedKey::Int(i) => i.serialize(serializer),
@@ -101,20 +101,20 @@ impl<'de> Deserialize<'de> for MixedKey {
                 f.write_str("an integer or string")
             }
 
-            fn visit_i32<E: serde::de::Error>(self, v: i32) -> Result<Self::Value, E> {
+            fn visit_i32<E: serde_core::de::Error>(self, v: i32) -> Result<Self::Value, E> {
                 Ok(MixedKey::Int(v))
             }
 
             fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
             where
-                E: serde::de::Error,
+                E: serde_core::de::Error,
             {
                 Ok(MixedKey::Str(String::from(v)))
             }
 
             fn visit_string<E>(self, v: String) -> Result<Self::Value, E>
             where
-                E: serde::de::Error,
+                E: serde_core::de::Error,
             {
                 Ok(MixedKey::Str(v))
             }

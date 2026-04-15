@@ -1,6 +1,6 @@
 use std::ops::{Deref, DerefMut};
 
-use serde::de::{Deserializer, MapAccess, SeqAccess, Visitor};
+use serde_core::de::{Deserializer, MapAccess, SeqAccess, Visitor};
 use std::marker::PhantomData;
 
 use crate::types::encoding::RubyEncoding;
@@ -27,18 +27,18 @@ impl<T, O> DerefMut for Ivar<T, O> {
     }
 }
 
-impl<'de, T, O> serde::Deserialize<'de> for Ivar<T, O>
+impl<'de, T, O> serde_core::Deserialize<'de> for Ivar<T, O>
 where
-    T: serde::Deserialize<'de>,
-    O: serde::Deserialize<'de>,
+    T: serde_core::Deserialize<'de>,
+    O: serde_core::Deserialize<'de>,
 {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         struct IvarVisitor<T, O>(PhantomData<(T, O)>);
 
         impl<'de, T, O> Visitor<'de> for IvarVisitor<T, O>
         where
-            T: serde::Deserialize<'de>,
-            O: serde::Deserialize<'de>,
+            T: serde_core::Deserialize<'de>,
+            O: serde_core::Deserialize<'de>,
         {
             type Value = Ivar<T, O>;
 
@@ -49,10 +49,10 @@ where
             fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
                 let inner = seq
                     .next_element()?
-                    .ok_or_else(|| serde::de::Error::invalid_length(0, &self))?;
+                    .ok_or_else(|| serde_core::de::Error::invalid_length(0, &self))?;
                 let ivars = seq
                     .next_element()?
-                    .ok_or_else(|| serde::de::Error::invalid_length(1, &self))?;
+                    .ok_or_else(|| serde_core::de::Error::invalid_length(1, &self))?;
                 Ok(Ivar { inner, ivars })
             }
         }
@@ -77,7 +77,7 @@ impl Deref for Encoding {
     }
 }
 
-impl<'de> serde::Deserialize<'de> for Encoding {
+impl<'de> serde_core::Deserialize<'de> for Encoding {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         struct EncodingVisitor;
 
@@ -107,14 +107,14 @@ impl<'de> serde::Deserialize<'de> for Encoding {
                             encoding = Some(map.next_value()?);
                         }
                         _ => {
-                            map.next_value::<serde::de::IgnoredAny>()?;
+                            map.next_value::<serde_core::de::IgnoredAny>()?;
                         }
                     }
                 }
 
                 encoding
                     .map(Encoding)
-                    .ok_or_else(|| serde::de::Error::missing_field("E or encoding"))
+                    .ok_or_else(|| serde_core::de::Error::missing_field("E or encoding"))
             }
         }
 

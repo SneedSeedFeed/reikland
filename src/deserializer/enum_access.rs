@@ -1,13 +1,13 @@
-use serde::de::{DeserializeSeed, Visitor};
+use serde_core::de::{DeserializeSeed, Visitor};
 
-use super::{Deserializer, MarshalDeserializeError, ErrorKind};
+use super::{Deserializer, ErrorKind, MarshalDeserializeError};
 use crate::{cursor::object_table::ObjectIdx, marshal::MarshalData};
 
 pub(crate) struct UnitVariantDeserializer<'a, 'b> {
     pub(crate) de: Deserializer<'a, 'b>,
 }
 
-impl<'de, 'b> serde::de::EnumAccess<'de> for UnitVariantDeserializer<'de, 'b> {
+impl<'de, 'b> serde_core::de::EnumAccess<'de> for UnitVariantDeserializer<'de, 'b> {
     type Error = MarshalDeserializeError;
     type Variant = UnitOnly;
 
@@ -22,14 +22,17 @@ impl<'de, 'b> serde::de::EnumAccess<'de> for UnitVariantDeserializer<'de, 'b> {
 
 pub(crate) struct UnitOnly;
 
-impl<'de> serde::de::VariantAccess<'de> for UnitOnly {
+impl<'de> serde_core::de::VariantAccess<'de> for UnitOnly {
     type Error = MarshalDeserializeError;
 
     fn unit_variant(self) -> Result<(), MarshalDeserializeError> {
         Ok(())
     }
 
-    fn newtype_variant_seed<T: DeserializeSeed<'de>>(self, _seed: T) -> Result<T::Value, MarshalDeserializeError> {
+    fn newtype_variant_seed<T: DeserializeSeed<'de>>(
+        self,
+        _seed: T,
+    ) -> Result<T::Value, MarshalDeserializeError> {
         Err(ErrorKind::TypeMismatch {
             expected: "unit variant",
             got: "newtype variant",
@@ -37,7 +40,11 @@ impl<'de> serde::de::VariantAccess<'de> for UnitOnly {
         .into())
     }
 
-    fn tuple_variant<V: Visitor<'de>>(self, _: usize, _: V) -> Result<V::Value, MarshalDeserializeError> {
+    fn tuple_variant<V: Visitor<'de>>(
+        self,
+        _: usize,
+        _: V,
+    ) -> Result<V::Value, MarshalDeserializeError> {
         Err(ErrorKind::TypeMismatch {
             expected: "unit variant",
             got: "tuple variant",
@@ -64,7 +71,7 @@ pub(crate) struct MapVariantDeserializer<'a, 'b> {
     pub(crate) val_idx: ObjectIdx,
 }
 
-impl<'de, 'b> serde::de::EnumAccess<'de> for MapVariantDeserializer<'de, 'b> {
+impl<'de, 'b> serde_core::de::EnumAccess<'de> for MapVariantDeserializer<'de, 'b> {
     type Error = MarshalDeserializeError;
     type Variant = MapVariantAccess<'de, 'b>;
 
@@ -92,7 +99,7 @@ pub(crate) struct MapVariantAccess<'a, 'b> {
     val_idx: ObjectIdx,
 }
 
-impl<'de, 'b> serde::de::VariantAccess<'de> for MapVariantAccess<'de, 'b> {
+impl<'de, 'b> serde_core::de::VariantAccess<'de> for MapVariantAccess<'de, 'b> {
     type Error = MarshalDeserializeError;
 
     fn unit_variant(self) -> Result<(), MarshalDeserializeError> {
@@ -103,7 +110,10 @@ impl<'de, 'b> serde::de::VariantAccess<'de> for MapVariantAccess<'de, 'b> {
         .into())
     }
 
-    fn newtype_variant_seed<T: DeserializeSeed<'de>>(self, seed: T) -> Result<T::Value, MarshalDeserializeError> {
+    fn newtype_variant_seed<T: DeserializeSeed<'de>>(
+        self,
+        seed: T,
+    ) -> Result<T::Value, MarshalDeserializeError> {
         let de = Deserializer {
             data: self.data,
             idx: self.val_idx,
@@ -111,12 +121,16 @@ impl<'de, 'b> serde::de::VariantAccess<'de> for MapVariantAccess<'de, 'b> {
         seed.deserialize(de)
     }
 
-    fn tuple_variant<V: Visitor<'de>>(self, _: usize, visitor: V) -> Result<V::Value, MarshalDeserializeError> {
+    fn tuple_variant<V: Visitor<'de>>(
+        self,
+        _: usize,
+        visitor: V,
+    ) -> Result<V::Value, MarshalDeserializeError> {
         let de = Deserializer {
             data: self.data,
             idx: self.val_idx,
         };
-        serde::Deserializer::deserialize_seq(de, visitor)
+        serde_core::Deserializer::deserialize_seq(de, visitor)
     }
 
     fn struct_variant<V: Visitor<'de>>(
@@ -128,6 +142,6 @@ impl<'de, 'b> serde::de::VariantAccess<'de> for MapVariantAccess<'de, 'b> {
             data: self.data,
             idx: self.val_idx,
         };
-        serde::Deserializer::deserialize_map(de, visitor)
+        serde_core::Deserializer::deserialize_map(de, visitor)
     }
 }

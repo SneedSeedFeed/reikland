@@ -1,4 +1,4 @@
-use serde::de::{DeserializeSeed, IntoDeserializer, SeqAccess};
+use serde_core::de::{DeserializeSeed, IntoDeserializer, SeqAccess};
 
 use super::map::{IvarsDeserializer, SymbolNameDeserializer};
 use super::{Deserializer, ErrorKind, rb_str_to_str};
@@ -247,7 +247,7 @@ impl<'de, 'b> SeqAccess<'de> for UserDefinedSeqAccess<'de, 'b> {
             }
             1 => {
                 self.state = 2;
-                seed.deserialize(serde::de::value::BorrowedBytesDeserializer::new(
+                seed.deserialize(serde_core::de::value::BorrowedBytesDeserializer::new(
                     self.payload,
                 ))
                 .map(Some)
@@ -288,7 +288,7 @@ impl<'de> SeqAccess<'de> for RegexSeqAccess<'de> {
             0 => {
                 self.state = 1;
                 let s = rb_str_to_str(self.pattern)?;
-                seed.deserialize(serde::de::value::BorrowedStrDeserializer::new(s))
+                seed.deserialize(serde_core::de::value::BorrowedStrDeserializer::new(s))
                     .map(Some)
             }
             1 => {
@@ -365,24 +365,24 @@ pub(crate) struct HashPairsDeserializer<'a, 'b> {
     pairs: &'b [(ObjectIdx, ObjectIdx)],
 }
 
-impl<'de, 'b> serde::de::Deserializer<'de> for HashPairsDeserializer<'de, 'b> {
+impl<'de, 'b> serde_core::de::Deserializer<'de> for HashPairsDeserializer<'de, 'b> {
     type Error = super::MarshalDeserializeError;
 
-    fn deserialize_any<V: serde::de::Visitor<'de>>(
+    fn deserialize_any<V: serde_core::de::Visitor<'de>>(
         self,
         visitor: V,
     ) -> Result<V::Value, super::MarshalDeserializeError> {
         visitor.visit_map(super::map::MapDeserializer::new(self.data, self.pairs))
     }
 
-    fn deserialize_map<V: serde::de::Visitor<'de>>(
+    fn deserialize_map<V: serde_core::de::Visitor<'de>>(
         self,
         visitor: V,
     ) -> Result<V::Value, super::MarshalDeserializeError> {
         self.deserialize_any(visitor)
     }
 
-    fn deserialize_struct<V: serde::de::Visitor<'de>>(
+    fn deserialize_struct<V: serde_core::de::Visitor<'de>>(
         self,
         _name: &'static str,
         _fields: &'static [&'static str],
@@ -391,21 +391,21 @@ impl<'de, 'b> serde::de::Deserializer<'de> for HashPairsDeserializer<'de, 'b> {
         self.deserialize_any(visitor)
     }
 
-    fn deserialize_ignored_any<V: serde::de::Visitor<'de>>(
+    fn deserialize_ignored_any<V: serde_core::de::Visitor<'de>>(
         self,
         visitor: V,
     ) -> Result<V::Value, super::MarshalDeserializeError> {
         visitor.visit_unit()
     }
 
-    fn deserialize_unit<V: serde::de::Visitor<'de>>(
+    fn deserialize_unit<V: serde_core::de::Visitor<'de>>(
         self,
         visitor: V,
     ) -> Result<V::Value, super::MarshalDeserializeError> {
         visitor.visit_unit()
     }
 
-    fn deserialize_unit_struct<V: serde::de::Visitor<'de>>(
+    fn deserialize_unit_struct<V: serde_core::de::Visitor<'de>>(
         self,
         _name: &'static str,
         visitor: V,
@@ -413,7 +413,7 @@ impl<'de, 'b> serde::de::Deserializer<'de> for HashPairsDeserializer<'de, 'b> {
         visitor.visit_unit()
     }
 
-    serde::forward_to_deserialize_any! {
+    serde_core::forward_to_deserialize_any! {
         bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
         bytes byte_buf option newtype_struct seq tuple tuple_struct enum identifier
     }

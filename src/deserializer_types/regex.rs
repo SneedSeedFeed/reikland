@@ -1,7 +1,7 @@
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 
-use serde::de::{Deserializer, SeqAccess, Visitor};
+use serde_core::de::{Deserializer, SeqAccess, Visitor};
 
 /// Type for deserializing Ruby regex values.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -23,16 +23,16 @@ impl<P> DerefMut for RbRegex<P> {
     }
 }
 
-impl<'de, P> serde::Deserialize<'de> for RbRegex<P>
+impl<'de, P> serde_core::Deserialize<'de> for RbRegex<P>
 where
-    P: serde::Deserialize<'de>,
+    P: serde_core::Deserialize<'de>,
 {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         struct RbRegexVisitor<P>(PhantomData<P>);
 
         impl<'de, P> Visitor<'de> for RbRegexVisitor<P>
         where
-            P: serde::Deserialize<'de>,
+            P: serde_core::Deserialize<'de>,
         {
             type Value = RbRegex<P>;
 
@@ -43,10 +43,10 @@ where
             fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
                 let pattern = seq
                     .next_element()?
-                    .ok_or_else(|| serde::de::Error::invalid_length(0, &self))?;
+                    .ok_or_else(|| serde_core::de::Error::invalid_length(0, &self))?;
                 let flags = seq
                     .next_element()?
-                    .ok_or_else(|| serde::de::Error::invalid_length(1, &self))?;
+                    .ok_or_else(|| serde_core::de::Error::invalid_length(1, &self))?;
                 Ok(RbRegex { pattern, flags })
             }
         }

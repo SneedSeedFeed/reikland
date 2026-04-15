@@ -177,39 +177,42 @@ impl std::fmt::Display for RbString {
     }
 }
 
-impl<'de> serde::Deserialize<'de> for RbString {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+impl<'de> serde_core::Deserialize<'de> for RbString {
+    fn deserialize<D: serde_core::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         struct RbStringVisitor;
 
-        impl<'de> serde::de::Visitor<'de> for RbStringVisitor {
+        impl<'de> serde_core::de::Visitor<'de> for RbStringVisitor {
             type Value = RbString;
 
             fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
                 f.write_str("a byte string")
             }
 
-            fn visit_bytes<E: serde::de::Error>(self, v: &[u8]) -> Result<Self::Value, E> {
+            fn visit_bytes<E: serde_core::de::Error>(self, v: &[u8]) -> Result<Self::Value, E> {
                 Ok(RbString { inner: v.to_vec() })
             }
 
-            fn visit_borrowed_bytes<E: serde::de::Error>(
+            fn visit_borrowed_bytes<E: serde_core::de::Error>(
                 self,
                 v: &'de [u8],
             ) -> Result<Self::Value, E> {
                 Ok(RbString { inner: v.to_vec() })
             }
 
-            fn visit_byte_buf<E: serde::de::Error>(self, v: Vec<u8>) -> Result<Self::Value, E> {
+            fn visit_byte_buf<E: serde_core::de::Error>(
+                self,
+                v: Vec<u8>,
+            ) -> Result<Self::Value, E> {
                 Ok(RbString { inner: v })
             }
 
-            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            fn visit_str<E: serde_core::de::Error>(self, v: &str) -> Result<Self::Value, E> {
                 Ok(RbString {
                     inner: v.as_bytes().to_vec(),
                 })
             }
 
-            fn visit_borrowed_str<E: serde::de::Error>(
+            fn visit_borrowed_str<E: serde_core::de::Error>(
                 self,
                 v: &'de str,
             ) -> Result<Self::Value, E> {
@@ -218,7 +221,7 @@ impl<'de> serde::Deserialize<'de> for RbString {
                 })
             }
 
-            fn visit_string<E: serde::de::Error>(self, v: String) -> Result<Self::Value, E> {
+            fn visit_string<E: serde_core::de::Error>(self, v: String) -> Result<Self::Value, E> {
                 Ok(RbString {
                     inner: v.into_bytes(),
                 })

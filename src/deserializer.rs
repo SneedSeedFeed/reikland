@@ -1,4 +1,4 @@
-use serde::de::Visitor;
+use serde_core::de::Visitor;
 
 use enum_access::{MapVariantDeserializer, UnitVariantDeserializer};
 
@@ -26,7 +26,7 @@ use error::type_mismatch;
 /// Deserialize a `T` from raw Ruby Marshal bytes.
 pub fn from_bytes<'a, T>(input: &'a [u8]) -> Result<T, MarshalDeserializeError>
 where
-    T: serde::de::Deserialize<'a>,
+    T: serde_core::de::Deserialize<'a>,
 {
     let data = crate::marshal::parse(input)?;
     from_marshal_data(&data)
@@ -35,7 +35,7 @@ where
 /// Deserialize a `T` from already-parsed [`MarshalData`].
 pub fn from_marshal_data<'a, T>(data: &MarshalData<'a>) -> Result<T, MarshalDeserializeError>
 where
-    T: serde::de::Deserialize<'a>,
+    T: serde_core::de::Deserialize<'a>,
 {
     let de = Deserializer {
         data,
@@ -126,7 +126,7 @@ macro_rules! deserialize_int {
     };
 }
 
-impl<'de, 'b> serde::de::Deserializer<'de> for Deserializer<'de, 'b> {
+impl<'de, 'b> serde_core::de::Deserializer<'de> for Deserializer<'de, 'b> {
     type Error = MarshalDeserializeError;
 
     fn deserialize_any<V: Visitor<'de>>(

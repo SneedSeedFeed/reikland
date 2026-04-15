@@ -3,27 +3,57 @@ use std::{
 };
 
 use bit_vec::BitVec;
-use serde::{
+use serde_core::{
     Deserialize, Serialize,
     de::{IgnoredAny, MapAccess, Visitor},
 };
 
 use crate::deserializer_types::MixedKeyRef;
 
-/// Deserializes a map/hash in ruby that has a [`MixedKey`][super::mixed_key::MixedKey] key, discarding the [MixedKey::Int][super::mixed_key::MixedKey::Int] keys.
-/// Does not verify that discarded values aren't unique.
-#[derive(Debug, Clone, Serialize)]
-#[repr(transparent)]
-pub struct DualKeyMap<K, V>(pub HashMap<K, V>);
+macro_rules! create_transparent_serde_thingamagig {
+    (
+        $(
+            #[doc = $doc:literal]
+        )*
+        #[derive($($derive_trait:ident),*)]
+        $vis:vis struct $name:ident<$($generic:ident),*>($inner_vis:vis $inner:ty)
+    ) => {
+        $(
+            #[doc = $doc]
+        )*
+        #[derive($($derive_trait),*)]
+        #[repr(transparent)]
+        $vis struct $name<$($generic),*>($inner_vis $inner);
 
-impl<'de, K, V> serde::Deserialize<'de> for DualKeyMap<K, V>
+        impl<$($generic),*> Serialize for $name<$($generic),*>
+        where
+            $inner: Serialize,
+        {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: serde_core::Serializer,
+            {
+                self.0.serialize(serializer)
+            }
+        }
+    };
+}
+
+create_transparent_serde_thingamagig!(
+    #[doc = "Deserializes a map/hash in ruby that has a [`MixedKey`][super::mixed_key::MixedKey] key, discarding the [MixedKey::Int][super::mixed_key::MixedKey::Int] keys."]
+    #[doc = "Does not verify that discarded values aren't unique."]
+    #[derive(Debug, Clone)]
+    pub struct DualKeyMap<K, V>(pub HashMap<K, V>)
+);
+
+impl<'de, K, V> serde_core::Deserialize<'de> for DualKeyMap<K, V>
 where
     K: From<&'de str> + Eq + Hash,
     V: Deserialize<'de>,
 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
-        D: serde::Deserializer<'de>,
+        D: serde_core::Deserializer<'de>,
     {
         struct DualKeyMapVisitor<K, V>(PhantomData<fn() -> (K, V)>);
 
@@ -50,7 +80,7 @@ where
                 while let Some(key) = map.next_key::<MixedKeyRef<'de>>()? {
                     match key {
                         MixedKeyRef::Int(_) => {
-                            map.next_value::<serde::de::IgnoredAny>()?;
+                            map.next_value::<serde_core::de::IgnoredAny>()?;
                         }
                         MixedKeyRef::Str(s) => {
                             let key = K::from(s);
@@ -67,20 +97,21 @@ where
     }
 }
 
-/// Deserializes a map/hash in ruby that has a [`MixedKey`][super::mixed_key::MixedKey] key, discarding the [MixedKey::Str][super::mixed_key::MixedKey::Str] keys.
-/// Does not verify that discarded values aren't unique.
-#[derive(Debug, Clone, Serialize)]
-#[repr(transparent)]
-pub struct DualKeyMapInt<K, V>(pub HashMap<K, V>);
+create_transparent_serde_thingamagig!(
+    #[doc = "Deserializes a map/hash in ruby that has a [`MixedKey`][super::mixed_key::MixedKey] key, discarding the [MixedKey::Str][super::mixed_key::MixedKey::Str] keys."]
+    #[doc = "Does not verify that discarded values aren't unique."]
+    #[derive(Debug, Clone)]
+    pub struct DualKeyMapInt<K, V>(pub HashMap<K, V>)
+);
 
-impl<'de, K, V> serde::Deserialize<'de> for DualKeyMapInt<K, V>
+impl<'de, K, V> serde_core::Deserialize<'de> for DualKeyMapInt<K, V>
 where
     K: From<i32> + Eq + Hash,
     V: Deserialize<'de>,
 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
-        D: serde::Deserializer<'de>,
+        D: serde_core::Deserializer<'de>,
     {
         struct DualKeyMapIntVisitor<K, V>(PhantomData<fn() -> (K, V)>);
 
@@ -217,17 +248,30 @@ impl<T> Drop for SparseVecBuilder<T> {
 /// Deserializes a map/hash in ruby that has a [`MixedKey`][super::mixed_key::MixedKey] key, discarding the [`MixedKey::Str`][super::mixed_key::MixedKey::Str] keys.
 /// Does not verify that discarded values aren't unique. DOES maintain the declared index from the format but does not allow holes. For a version that does not maintain indexes but may deserialize faster see [`DualKeyVec`].
 /// The OFFSET constant is subtracted from each index, primarily for cases where the deserialized data is 1-indexed to avoid leaving holes at 0.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 #[repr(transparent)]
 pub struct DualKeyVecSparse<T, const OFFSET: usize = 0>(pub Vec<T>);
 
-impl<'de, T, const OFFSET: usize> serde::Deserialize<'de> for DualKeyVecSparse<T, OFFSET>
+// i didnt think to cover for const generics in my macro lol.
+impl<T, const OFFSET: usize> Serialize for DualKeyVecSparse<T, OFFSET>
+where
+    Vec<T>: Serialize,
+{
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde_core::Serializer,
+    {
+        self.0.serialize(serializer)
+    }
+}
+
+impl<'de, T, const OFFSET: usize> serde_core::Deserialize<'de> for DualKeyVecSparse<T, OFFSET>
 where
     T: Deserialize<'de>,
 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
-        D: serde::Deserializer<'de>,
+        D: serde_core::Deserializer<'de>,
     {
         struct DualKeyVecVisitor<T, const OFFSET: usize>(PhantomData<fn() -> T>);
 
@@ -245,7 +289,7 @@ where
 
             fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
             where
-                A: serde::de::MapAccess<'de>,
+                A: serde_core::de::MapAccess<'de>,
             {
                 let mut vec = map
                     .size_hint()
@@ -258,12 +302,12 @@ where
                         continue;
                     };
                     let index = usize::try_from(key).map_err(|_| {
-                        serde::de::Error::custom(format_args!(
+                        serde_core::de::Error::custom(format_args!(
                             "key '{key}' should be a positive integer"
                         ))
                     })?;
                     if OFFSET > index {
-                        return Err(serde::de::Error::custom(
+                        return Err(serde_core::de::Error::custom(
                             "overflow when subtracting OFFSET from index",
                         ));
                     }
@@ -272,7 +316,7 @@ where
                 }
 
                 vec.build().ok_or_else(|| {
-                    serde::de::Error::custom(
+                    serde_core::de::Error::custom(
                         "DualKeyVecSparse found holes in indexes of source data",
                     )
                 })
@@ -285,19 +329,20 @@ where
     }
 }
 
-/// Deserializes a map/hash in ruby that has a [`MixedKey`][super::mixed_key::MixedKey] key, discarding the [`MixedKey::Str`][super::mixed_key::MixedKey::Str] keys.
-/// Does not verify that discarded values aren't unique. Does not maintain the declared index from the format as it just inserts each value in the order they are encountered.
-#[derive(Debug, Clone, Serialize)]
-#[repr(transparent)]
-pub struct DualKeyVec<T>(pub Vec<T>);
+create_transparent_serde_thingamagig!(
+    #[doc = "Deserializes a map/hash in ruby that has a [`MixedKey`][super::mixed_key::MixedKey] key, discarding the [`MixedKey::Str`][super::mixed_key::MixedKey::Str] keys."]
+    #[doc = "Does not verify that discarded values aren't unique. Does not maintain the declared index from the format as it just inserts each value in the order they are encountered."]
+    #[derive(Debug, Clone)]
+    pub struct DualKeyVec<T>(pub Vec<T>)
+);
 
-impl<'de, T> serde::Deserialize<'de> for DualKeyVec<T>
+impl<'de, T> serde_core::Deserialize<'de> for DualKeyVec<T>
 where
     T: Deserialize<'de>,
 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
-        D: serde::Deserializer<'de>,
+        D: serde_core::Deserializer<'de>,
     {
         struct DualKeyVecVisitor<T>(PhantomData<fn() -> T>);
 
@@ -313,7 +358,7 @@ where
 
             fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
             where
-                A: serde::de::MapAccess<'de>,
+                A: serde_core::de::MapAccess<'de>,
             {
                 let mut vec = map.size_hint().map(Vec::with_capacity).unwrap_or_default();
 
@@ -334,19 +379,20 @@ where
     }
 }
 
-/// Deserializes a map/hash in ruby that has a [`MixedKey`][super::mixed_key::MixedKey] key, discarding the [`MixedKey::Str`][super::mixed_key::MixedKey::Str] keys.
-/// Does not verify that discarded values aren't unique. DOES maintain the declared index from the format and permits holes.
-#[derive(Debug, Clone, Serialize)]
-#[repr(transparent)]
-pub struct DualKeyVecSparseHoley<T>(pub Vec<Option<T>>);
+create_transparent_serde_thingamagig!(
+    #[doc = "Deserializes a map/hash in ruby that has a [`MixedKey`][super::mixed_key::MixedKey] key, discarding the [`MixedKey::Str`][super::mixed_key::MixedKey::Str] keys."]
+    #[doc = "Does not verify that discarded values aren't unique. DOES maintain the declared index from the format and permits holes."]
+    #[derive(Debug, Clone)]
+    pub struct DualKeyVecSparseHoley<T>(pub Vec<Option<T>>)
+);
 
-impl<'de, T> serde::Deserialize<'de> for DualKeyVecSparseHoley<T>
+impl<'de, T> serde_core::Deserialize<'de> for DualKeyVecSparseHoley<T>
 where
     T: Deserialize<'de>,
 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
-        D: serde::Deserializer<'de>,
+        D: serde_core::Deserializer<'de>,
     {
         struct DualKeyVecSparseHoleyVisitor<T>(PhantomData<fn() -> T>);
 
@@ -362,7 +408,7 @@ where
 
             fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
             where
-                A: serde::de::MapAccess<'de>,
+                A: serde_core::de::MapAccess<'de>,
             {
                 let mut vec = map
                     .size_hint()
@@ -375,7 +421,7 @@ where
                         continue;
                     };
                     let index = usize::try_from(key).map_err(|_| {
-                        serde::de::Error::custom(format_args!(
+                        serde_core::de::Error::custom(format_args!(
                             "key '{key}' should be a positive integer"
                         ))
                     })?;

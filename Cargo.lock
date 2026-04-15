@@ -160,7 +160,7 @@ dependencies = [
 
 [[package]]
 name = "reikland"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bit-vec",
  "itertools",
@@ -168,6 +168,7 @@ dependencies = [
  "num-bigint",
  "phf",
  "serde",
+ "serde_core",
  "str_enum",
  "strum",
  "thiserror",

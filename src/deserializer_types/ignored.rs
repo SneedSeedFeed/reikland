@@ -4,9 +4,9 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct Ignored;
 
-impl<'de> serde::Deserialize<'de> for Ignored {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        serde::de::IgnoredAny::deserialize(deserializer)?;
+impl<'de> serde_core::Deserialize<'de> for Ignored {
+    fn deserialize<D: serde_core::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        serde_core::de::IgnoredAny::deserialize(deserializer)?;
         Ok(Ignored)
     }
 }

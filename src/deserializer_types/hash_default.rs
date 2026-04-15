@@ -1,7 +1,7 @@
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 
-use serde::de::{Deserializer, SeqAccess, Visitor};
+use serde_core::de::{Deserializer, SeqAccess, Visitor};
 
 use super::ignored::Ignored;
 
@@ -25,18 +25,18 @@ impl<T, D> DerefMut for RbHashDefault<T, D> {
     }
 }
 
-impl<'de, T, D> serde::Deserialize<'de> for RbHashDefault<T, D>
+impl<'de, T, D> serde_core::Deserialize<'de> for RbHashDefault<T, D>
 where
-    T: serde::Deserialize<'de>,
-    D: serde::Deserialize<'de>,
+    T: serde_core::Deserialize<'de>,
+    D: serde_core::Deserialize<'de>,
 {
     fn deserialize<De: Deserializer<'de>>(deserializer: De) -> Result<Self, De::Error> {
         struct RbHashDefaultVisitor<T, D>(PhantomData<(T, D)>);
 
         impl<'de, T, D> Visitor<'de> for RbHashDefaultVisitor<T, D>
         where
-            T: serde::Deserialize<'de>,
-            D: serde::Deserialize<'de>,
+            T: serde_core::Deserialize<'de>,
+            D: serde_core::Deserialize<'de>,
         {
             type Value = RbHashDefault<T, D>;
 
@@ -47,10 +47,10 @@ where
             fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
                 let hash = seq
                     .next_element()?
-                    .ok_or_else(|| serde::de::Error::invalid_length(0, &self))?;
+                    .ok_or_else(|| serde_core::de::Error::invalid_length(0, &self))?;
                 let default = seq
                     .next_element()?
-                    .ok_or_else(|| serde::de::Error::invalid_length(1, &self))?;
+                    .ok_or_else(|| serde_core::de::Error::invalid_length(1, &self))?;
                 Ok(RbHashDefault { hash, default })
             }
         }

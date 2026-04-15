@@ -57,7 +57,7 @@ impl From<ParseError> for MarshalDeserializeError {
     }
 }
 
-impl serde::de::Error for MarshalDeserializeError {
+impl serde_core::de::Error for MarshalDeserializeError {
     fn custom<T: std::fmt::Display>(msg: T) -> Self {
         ErrorKind::Message(msg.to_string().into_boxed_str()).into()
     }

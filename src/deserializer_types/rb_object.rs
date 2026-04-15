@@ -1,6 +1,6 @@
 use std::ops::{Deref, DerefMut};
 
-use serde::de::{Deserializer, SeqAccess, Visitor};
+use serde_core::de::{Deserializer, SeqAccess, Visitor};
 use std::marker::PhantomData;
 
 use super::ignored::Ignored;
@@ -25,18 +25,18 @@ impl<T, N> DerefMut for RbObject<T, N> {
     }
 }
 
-impl<'de, T, N> serde::Deserialize<'de> for RbObject<T, N>
+impl<'de, T, N> serde_core::Deserialize<'de> for RbObject<T, N>
 where
-    T: serde::Deserialize<'de>,
-    N: serde::Deserialize<'de>,
+    T: serde_core::Deserialize<'de>,
+    N: serde_core::Deserialize<'de>,
 {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         struct RbObjectVisitor<T, N>(PhantomData<(T, N)>);
 
         impl<'de, T, N> Visitor<'de> for RbObjectVisitor<T, N>
         where
-            T: serde::Deserialize<'de>,
-            N: serde::Deserialize<'de>,
+            T: serde_core::Deserialize<'de>,
+            N: serde_core::Deserialize<'de>,
         {
             type Value = RbObject<T, N>;
 
@@ -47,10 +47,10 @@ where
             fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
                 let class = seq
                     .next_element()?
-                    .ok_or_else(|| serde::de::Error::invalid_length(0, &self))?;
+                    .ok_or_else(|| serde_core::de::Error::invalid_length(0, &self))?;
                 let fields = seq
                     .next_element()?
-                    .ok_or_else(|| serde::de::Error::invalid_length(1, &self))?;
+                    .ok_or_else(|| serde_core::de::Error::invalid_length(1, &self))?;
                 Ok(RbObject { class, fields })
             }
         }
