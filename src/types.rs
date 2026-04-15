@@ -10,5 +10,6 @@ pub mod value;
 pub use {
     encoding::RubyEncoding,
     regex::RbRegexStr,
+    string::RbString,
     value::MarshalValue,
 };

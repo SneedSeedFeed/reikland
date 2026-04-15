@@ -3,9 +3,11 @@ use std::ops::{Deref, DerefMut};
 use serde::de::{Deserializer, SeqAccess, Visitor};
 use std::marker::PhantomData;
 
+use super::ignored::Ignored;
+
 /// Type for deserializing Ruby Object (`o`) values
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct RbObject<T, N = ()> {
+pub struct RbObject<T, N = Ignored> {
     pub class: N,
     pub fields: T,
 }

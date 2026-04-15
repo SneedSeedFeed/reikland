@@ -3,9 +3,11 @@ use std::ops::{Deref, DerefMut};
 
 use serde::de::{Deserializer, SeqAccess, Visitor};
 
+use super::ignored::Ignored;
+
 /// Deserializer type for Ruby Hash-with-default values
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RbHashDefault<T, D = ()> {
+pub struct RbHashDefault<T, D = Ignored> {
     pub hash: T,
     pub default: D,
 }

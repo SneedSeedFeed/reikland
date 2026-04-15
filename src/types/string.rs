@@ -117,6 +117,118 @@ impl<'a> TryFrom<&'a RbStr> for &'a str {
     }
 }
 
+/// Owned counterpart of [`RbStr`]. Holds raw bytes from a Ruby string without assuming any particular encoding
+/// If encoding is needed [`Encoding`][crate::deserializer_types::ivar::Encoding] or [`WithEncoding`][crate::deserializer_types::ivar::WithEncoding] to discover the encoding if you need it.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RbString {
+    inner: Vec<u8>,
+}
+
+impl RbString {
+    pub fn into_vec(self) -> Vec<u8> {
+        self.inner
+    }
+}
+
+impl Deref for RbString {
+    type Target = RbStr;
+
+    fn deref(&self) -> &RbStr {
+        RbStr::from_slice(&self.inner)
+    }
+}
+
+impl DerefMut for RbString {
+    fn deref_mut(&mut self) -> &mut RbStr {
+        let ptr = std::ptr::from_mut(self.inner.as_mut_slice());
+        let cast = ptr as *mut RbStr;
+        // Safety: RbStr is repr(transparent) over [u8]
+        unsafe { &mut *cast }
+    }
+}
+
+impl From<Vec<u8>> for RbString {
+    fn from(v: Vec<u8>) -> Self {
+        RbString { inner: v }
+    }
+}
+
+impl From<RbString> for Vec<u8> {
+    fn from(s: RbString) -> Self {
+        s.inner
+    }
+}
+
+impl AsRef<[u8]> for RbString {
+    fn as_ref(&self) -> &[u8] {
+        &self.inner
+    }
+}
+
+impl AsRef<RbStr> for RbString {
+    fn as_ref(&self) -> &RbStr {
+        self
+    }
+}
+
+impl std::fmt::Display for RbString {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        <RbStr as std::fmt::Display>::fmt(self, f)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for RbString {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct RbStringVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for RbStringVisitor {
+            type Value = RbString;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a byte string")
+            }
+
+            fn visit_bytes<E: serde::de::Error>(self, v: &[u8]) -> Result<Self::Value, E> {
+                Ok(RbString { inner: v.to_vec() })
+            }
+
+            fn visit_borrowed_bytes<E: serde::de::Error>(
+                self,
+                v: &'de [u8],
+            ) -> Result<Self::Value, E> {
+                Ok(RbString { inner: v.to_vec() })
+            }
+
+            fn visit_byte_buf<E: serde::de::Error>(self, v: Vec<u8>) -> Result<Self::Value, E> {
+                Ok(RbString { inner: v })
+            }
+
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                Ok(RbString {
+                    inner: v.as_bytes().to_vec(),
+                })
+            }
+
+            fn visit_borrowed_str<E: serde::de::Error>(
+                self,
+                v: &'de str,
+            ) -> Result<Self::Value, E> {
+                Ok(RbString {
+                    inner: v.as_bytes().to_vec(),
+                })
+            }
+
+            fn visit_string<E: serde::de::Error>(self, v: String) -> Result<Self::Value, E> {
+                Ok(RbString {
+                    inner: v.into_bytes(),
+                })
+            }
+        }
+
+        deserializer.deserialize_byte_buf(RbStringVisitor)
+    }
+}
+
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("{kind}")]
 pub struct ParseRbStrError {

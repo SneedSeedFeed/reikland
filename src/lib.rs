@@ -7,7 +7,9 @@ pub mod version_number;
 
 pub use deserializer::{from_bytes, from_marshal_data};
 pub use deserializer_types::{
-    Encoding, Ivar, MixedKey, MixedKeyRef, RbHashDefault, RbObject, RbRegex, RbStruct,
+    Encoding, Ignored, Ivar, MixedKey, MixedKeyRef, RbHashDefault, RbObject, RbRegex, RbStruct,
     Transparent, TransparentOpt, WithEncoding,
 };
-pub use types::{encoding::RubyEncoding, regex::RbRegexStr, value::MarshalValue};
+pub use types::{
+    encoding::RubyEncoding, regex::RbRegexStr, string::RbString, value::MarshalValue,
+};

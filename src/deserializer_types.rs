@@ -2,6 +2,7 @@
 
 pub mod dual_key_map;
 pub mod hash_default;
+pub mod ignored;
 pub mod ivar;
 pub mod mixed_key;
 pub mod rb_object;
@@ -10,6 +11,7 @@ pub mod transparent;
 
 pub use {
     hash_default::RbHashDefault,
+    ignored::Ignored,
     ivar::{Encoding, Ivar, WithEncoding},
     mixed_key::{MixedKey, MixedKeyRef},
     rb_object::{RbObject, RbStruct},

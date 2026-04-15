@@ -467,6 +467,7 @@ mod tests {
     use crate::{
         deserializer::{Error, from_marshal_data},
         deserializer_types::{
+            Ignored,
             ivar::{Ivar, WithEncoding},
             rb_object::RbObject,
         },
@@ -643,7 +644,7 @@ mod tests {
         let data = marshal::parse(bytes).unwrap();
         let result: Ivar<&str> = de_from_ruby(&data).unwrap();
         assert_eq!(result.inner, "hello");
-        assert_eq!(result.ivars, ());
+        assert_eq!(result.ivars, Ignored);
     }
 
     #[test]
@@ -808,7 +809,7 @@ mod tests {
         let data = marshal::parse(OBJECT_PT).unwrap();
         let result: RbObject<Pt> = de_from_ruby(&data).unwrap();
         assert_eq!(result.fields, Pt { x: 10, y: 20 });
-        assert_eq!(result.class, ());
+        assert_eq!(result.class, Ignored);
     }
 
     #[test]

@@ -5,9 +5,11 @@ use std::marker::PhantomData;
 
 use crate::types::encoding::RubyEncoding;
 
+use super::ignored::Ignored;
+
 /// Type for deserializing Ruby Instance variable wrappers.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Ivar<T, O = ()> {
+pub struct Ivar<T, O = Ignored> {
     pub inner: T,
     pub ivars: O,
 }
