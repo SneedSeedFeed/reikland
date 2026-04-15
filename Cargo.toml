@@ -5,6 +5,12 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 readme = "README.md"
+description = "A serde-compatible Ruby marshal parser and deserializer"
+repository = "https://github.com/SneedSeedFeed/reikland"
+documentation = "https://docs.rs/reikland"
+keywords = ["marshal", "ruby", "serde", "parser", "deserialize"]
+categories = ["parser-implementations", "parsing"]
+
 
 [dependencies]
 bit-vec = "0.9.1"

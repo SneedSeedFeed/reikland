@@ -10,7 +10,7 @@ pub mod object_table;
 pub mod symbol_table;
 
 // todo: better name than `Cursor` maybe? since im shadowing std::io::CUrsor
-/// Cursor over bytes in Ruby marshal format, tracks [symbols][Self::symbols] and [objects][Self::objects]. You probably don't need to interact with this.
+/// Cursor over bytes in Ruby marshal format, tracks symbols and objects. You probably don't need to interact with this.
 pub struct Cursor<'a> {
     slice: &'a [u8],
     symbols: SymbolTable<'a>,

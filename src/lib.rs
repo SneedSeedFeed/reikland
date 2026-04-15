@@ -43,7 +43,7 @@
 //!
 //! # Using the parser directly
 //!
-//! If the serde implementation doesn't work for you, the raw parser is exposed via [`marshal::parse`](marshal::parse).
+//! If the serde implementation doesn't work for you, the raw parser is exposed via [`marshal::parse`].
 //! It produces a flat [`marshal::MarshalData`] with no recursive types, which the serde implementation also uses internally.
 
 pub mod cursor;
