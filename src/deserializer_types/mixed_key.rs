@@ -1,5 +1,6 @@
 use serde::{Deserialize, Deserializer, de::Visitor};
 
+/// Decently common key used in marshal data. Captures both fixnum and utf-8 str keys (if there's non utf8 in your keys idk man)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum MixedKeyRef<'a> {
     Int(i32),
@@ -53,6 +54,7 @@ impl std::fmt::Display for MixedKeyRef<'_> {
     }
 }
 
+/// Owned version of [`MixedKeyRef`]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum MixedKey {
     Int(i32),

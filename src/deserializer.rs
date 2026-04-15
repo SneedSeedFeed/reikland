@@ -19,12 +19,12 @@ mod error;
 mod map;
 mod seq;
 
-pub use error::Error;
 pub(crate) use error::ErrorKind;
+pub use error::MarshalDeserializeError;
 use error::type_mismatch;
 
 /// Deserialize a `T` from raw Ruby Marshal bytes.
-pub fn from_bytes<'a, T>(input: &'a [u8]) -> Result<T, Error>
+pub fn from_bytes<'a, T>(input: &'a [u8]) -> Result<T, MarshalDeserializeError>
 where
     T: serde::de::Deserialize<'a>,
 {
@@ -33,7 +33,7 @@ where
 }
 
 /// Deserialize a `T` from already-parsed [`MarshalData`].
-pub fn from_marshal_data<'a, T>(data: &MarshalData<'a>) -> Result<T, Error>
+pub fn from_marshal_data<'a, T>(data: &MarshalData<'a>) -> Result<T, MarshalDeserializeError>
 where
     T: serde::de::Deserialize<'a>,
 {
@@ -55,7 +55,7 @@ const MAX_REF_DEPTH: usize = 256;
 // todo: smarter cycle detection than just running up to a limit?
 impl<'a, 'b> Deserializer<'a, 'b> {
     /// Follow [`MarshalValue::ObjectRef`] chains until we reach a concrete value, up to [`MAX_REF_DEPTH`] times.
-    fn resolve(&self, idx: ObjectIdx) -> Result<&'b MarshalValue<'a>, Error> {
+    fn resolve(&self, idx: ObjectIdx) -> Result<&'b MarshalValue<'a>, MarshalDeserializeError> {
         let mut val = self.data.object(idx);
         for _ in 0..MAX_REF_DEPTH {
             match val {
@@ -64,7 +64,7 @@ impl<'a, 'b> Deserializer<'a, 'b> {
                         .data
                         .objects
                         .get_by_ref(ref_idx.inner())
-                        .expect("invalid object ref");
+                        .ok_or(ErrorKind::InvalidObjectRef(ref_idx.inner()))?;
                     val = self.data.object(obj_idx);
                 }
                 _ => return Ok(val),
@@ -74,13 +74,13 @@ impl<'a, 'b> Deserializer<'a, 'b> {
     }
 
     /// Resolve a SymbolIdx to a UTF-8 string.
-    fn symbol_str(&self, idx: SymbolIdx) -> Result<&'a str, Error> {
+    fn symbol_str(&self, idx: SymbolIdx) -> Result<&'a str, MarshalDeserializeError> {
         let rb = self.resolve_symbol(idx)?;
         rb_str_to_str(rb)
     }
 
     /// Resolve the current value as a map
-    fn resolve_as_hash(&self) -> Result<&'b [(ObjectIdx, ObjectIdx)], Error> {
+    fn resolve_as_hash(&self) -> Result<&'b [(ObjectIdx, ObjectIdx)], MarshalDeserializeError> {
         let val = self.resolve(self.idx)?;
         match val {
             MarshalValue::Hash(pairs) | MarshalValue::HashDefault { pairs, .. } => Ok(pairs),
@@ -88,18 +88,18 @@ impl<'a, 'b> Deserializer<'a, 'b> {
         }
     }
 
-    fn resolve_symbol(&self, idx: SymbolIdx) -> Result<&'a RbStr, Error> {
+    fn resolve_symbol(&self, idx: SymbolIdx) -> Result<&'a RbStr, MarshalDeserializeError> {
         self.data
             .symbol(idx)
             .ok_or(ErrorKind::InvalidSymbolIndex(idx.inner()))
-            .map_err(Error::from)
+            .map_err(MarshalDeserializeError::from)
     }
 }
 
-pub(crate) fn rb_str_to_str(rb: &RbStr) -> Result<&str, Error> {
+pub(crate) fn rb_str_to_str(rb: &RbStr) -> Result<&str, MarshalDeserializeError> {
     rb.try_into()
         .map_err(ErrorKind::InvalidUtf8)
-        .map_err(Error::from)
+        .map_err(MarshalDeserializeError::from)
 }
 
 macro_rules! deserialize_int {
@@ -127,9 +127,12 @@ macro_rules! deserialize_int {
 }
 
 impl<'de, 'b> serde::de::Deserializer<'de> for Deserializer<'de, 'b> {
-    type Error = Error;
+    type Error = MarshalDeserializeError;
 
-    fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+    fn deserialize_any<V: Visitor<'de>>(
+        self,
+        visitor: V,
+    ) -> Result<V::Value, MarshalDeserializeError> {
         match self.resolve(self.idx)? {
             MarshalValue::Nil => visitor.visit_unit(),
             MarshalValue::True => visitor.visit_bool(true),
@@ -196,7 +199,10 @@ impl<'de, 'b> serde::de::Deserializer<'de> for Deserializer<'de, 'b> {
         }
     }
 
-    fn deserialize_bool<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+    fn deserialize_bool<V: Visitor<'de>>(
+        self,
+        visitor: V,
+    ) -> Result<V::Value, MarshalDeserializeError> {
         match self.resolve(self.idx)? {
             MarshalValue::True => visitor.visit_bool(true),
             MarshalValue::False => visitor.visit_bool(false),
@@ -204,47 +210,80 @@ impl<'de, 'b> serde::de::Deserializer<'de> for Deserializer<'de, 'b> {
         }
     }
 
-    fn deserialize_i8<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+    fn deserialize_i8<V: Visitor<'de>>(
+        self,
+        visitor: V,
+    ) -> Result<V::Value, MarshalDeserializeError> {
         deserialize_int!(self, visitor, deserialize_i8, visit_i8, i8)
     }
 
-    fn deserialize_i16<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+    fn deserialize_i16<V: Visitor<'de>>(
+        self,
+        visitor: V,
+    ) -> Result<V::Value, MarshalDeserializeError> {
         deserialize_int!(self, visitor, deserialize_i16, visit_i16, i16)
     }
 
-    fn deserialize_i32<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+    fn deserialize_i32<V: Visitor<'de>>(
+        self,
+        visitor: V,
+    ) -> Result<V::Value, MarshalDeserializeError> {
         deserialize_int!(self, visitor, deserialize_i32, visit_i32, i32)
     }
 
-    fn deserialize_i64<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+    fn deserialize_i64<V: Visitor<'de>>(
+        self,
+        visitor: V,
+    ) -> Result<V::Value, MarshalDeserializeError> {
         deserialize_int!(self, visitor, deserialize_i64, visit_i64, i64)
     }
 
-    fn deserialize_i128<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+    fn deserialize_i128<V: Visitor<'de>>(
+        self,
+        visitor: V,
+    ) -> Result<V::Value, MarshalDeserializeError> {
         deserialize_int!(self, visitor, deserialize_i128, visit_i128, i128)
     }
 
-    fn deserialize_u8<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+    fn deserialize_u8<V: Visitor<'de>>(
+        self,
+        visitor: V,
+    ) -> Result<V::Value, MarshalDeserializeError> {
         deserialize_int!(self, visitor, deserialize_u8, visit_u8, u8)
     }
 
-    fn deserialize_u16<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+    fn deserialize_u16<V: Visitor<'de>>(
+        self,
+        visitor: V,
+    ) -> Result<V::Value, MarshalDeserializeError> {
         deserialize_int!(self, visitor, deserialize_u16, visit_u16, u16)
     }
 
-    fn deserialize_u32<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+    fn deserialize_u32<V: Visitor<'de>>(
+        self,
+        visitor: V,
+    ) -> Result<V::Value, MarshalDeserializeError> {
         deserialize_int!(self, visitor, deserialize_u32, visit_u32, u32)
     }
 
-    fn deserialize_u64<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+    fn deserialize_u64<V: Visitor<'de>>(
+        self,
+        visitor: V,
+    ) -> Result<V::Value, MarshalDeserializeError> {
         deserialize_int!(self, visitor, deserialize_u64, visit_u64, u64)
     }
 
-    fn deserialize_u128<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+    fn deserialize_u128<V: Visitor<'de>>(
+        self,
+        visitor: V,
+    ) -> Result<V::Value, MarshalDeserializeError> {
         deserialize_int!(self, visitor, deserialize_u128, visit_u128, u128)
     }
 
-    fn deserialize_f32<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+    fn deserialize_f32<V: Visitor<'de>>(
+        self,
+        visitor: V,
+    ) -> Result<V::Value, MarshalDeserializeError> {
         match self.resolve(self.idx)? {
             MarshalValue::Float(f) => visitor.visit_f32(*f as f32),
             MarshalValue::Fixnum(n) => visitor.visit_f32(*n as f32),
@@ -252,7 +291,10 @@ impl<'de, 'b> serde::de::Deserializer<'de> for Deserializer<'de, 'b> {
         }
     }
 
-    fn deserialize_f64<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+    fn deserialize_f64<V: Visitor<'de>>(
+        self,
+        visitor: V,
+    ) -> Result<V::Value, MarshalDeserializeError> {
         match self.resolve(self.idx)? {
             MarshalValue::Float(f) => visitor.visit_f64(*f),
             MarshalValue::Fixnum(n) => visitor.visit_f64(*n as f64),
@@ -260,7 +302,10 @@ impl<'de, 'b> serde::de::Deserializer<'de> for Deserializer<'de, 'b> {
         }
     }
 
-    fn deserialize_char<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+    fn deserialize_char<V: Visitor<'de>>(
+        self,
+        visitor: V,
+    ) -> Result<V::Value, MarshalDeserializeError> {
         let val = self.resolve(self.idx)?;
         let rb = match val {
             MarshalValue::String(rb) | MarshalValue::Symbol(rb) => rb,
@@ -281,7 +326,10 @@ impl<'de, 'b> serde::de::Deserializer<'de> for Deserializer<'de, 'b> {
         }
     }
 
-    fn deserialize_str<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+    fn deserialize_str<V: Visitor<'de>>(
+        self,
+        visitor: V,
+    ) -> Result<V::Value, MarshalDeserializeError> {
         let val = self.resolve(self.idx)?;
         match val {
             MarshalValue::String(rb)
@@ -304,11 +352,17 @@ impl<'de, 'b> serde::de::Deserializer<'de> for Deserializer<'de, 'b> {
         }
     }
 
-    fn deserialize_string<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+    fn deserialize_string<V: Visitor<'de>>(
+        self,
+        visitor: V,
+    ) -> Result<V::Value, MarshalDeserializeError> {
         self.deserialize_str(visitor)
     }
 
-    fn deserialize_bytes<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+    fn deserialize_bytes<V: Visitor<'de>>(
+        self,
+        visitor: V,
+    ) -> Result<V::Value, MarshalDeserializeError> {
         let val = self.resolve(self.idx)?;
         match val {
             MarshalValue::String(rb) | MarshalValue::Symbol(rb) => {
@@ -326,18 +380,27 @@ impl<'de, 'b> serde::de::Deserializer<'de> for Deserializer<'de, 'b> {
         }
     }
 
-    fn deserialize_byte_buf<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+    fn deserialize_byte_buf<V: Visitor<'de>>(
+        self,
+        visitor: V,
+    ) -> Result<V::Value, MarshalDeserializeError> {
         self.deserialize_bytes(visitor)
     }
 
-    fn deserialize_option<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+    fn deserialize_option<V: Visitor<'de>>(
+        self,
+        visitor: V,
+    ) -> Result<V::Value, MarshalDeserializeError> {
         match self.resolve(self.idx)? {
             MarshalValue::Nil => visitor.visit_none(),
             _ => visitor.visit_some(self),
         }
     }
 
-    fn deserialize_unit<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+    fn deserialize_unit<V: Visitor<'de>>(
+        self,
+        visitor: V,
+    ) -> Result<V::Value, MarshalDeserializeError> {
         match self.resolve(self.idx)? {
             MarshalValue::Nil => visitor.visit_unit(),
             other => Err(type_mismatch("nil/unit", other)),
@@ -348,7 +411,7 @@ impl<'de, 'b> serde::de::Deserializer<'de> for Deserializer<'de, 'b> {
         self,
         _name: &'static str,
         visitor: V,
-    ) -> Result<V::Value, Error> {
+    ) -> Result<V::Value, MarshalDeserializeError> {
         self.deserialize_unit(visitor)
     }
 
@@ -356,11 +419,14 @@ impl<'de, 'b> serde::de::Deserializer<'de> for Deserializer<'de, 'b> {
         self,
         _name: &'static str,
         visitor: V,
-    ) -> Result<V::Value, Error> {
+    ) -> Result<V::Value, MarshalDeserializeError> {
         visitor.visit_newtype_struct(self)
     }
 
-    fn deserialize_seq<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+    fn deserialize_seq<V: Visitor<'de>>(
+        self,
+        visitor: V,
+    ) -> Result<V::Value, MarshalDeserializeError> {
         let val = self.resolve(self.idx)?;
         match val {
             MarshalValue::Array(elems) => visitor.visit_seq(SeqDeserializer::new(self.data, elems)),
@@ -393,7 +459,11 @@ impl<'de, 'b> serde::de::Deserializer<'de> for Deserializer<'de, 'b> {
         }
     }
 
-    fn deserialize_tuple<V: Visitor<'de>>(self, _: usize, visitor: V) -> Result<V::Value, Error> {
+    fn deserialize_tuple<V: Visitor<'de>>(
+        self,
+        _: usize,
+        visitor: V,
+    ) -> Result<V::Value, MarshalDeserializeError> {
         self.deserialize_seq(visitor)
     }
 
@@ -402,11 +472,14 @@ impl<'de, 'b> serde::de::Deserializer<'de> for Deserializer<'de, 'b> {
         _: &'static str,
         _: usize,
         visitor: V,
-    ) -> Result<V::Value, Error> {
+    ) -> Result<V::Value, MarshalDeserializeError> {
         self.deserialize_seq(visitor)
     }
 
-    fn deserialize_map<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+    fn deserialize_map<V: Visitor<'de>>(
+        self,
+        visitor: V,
+    ) -> Result<V::Value, MarshalDeserializeError> {
         let pairs = self.resolve_as_hash()?;
         visitor.visit_map(MapDeserializer::new(self.data, pairs))
     }
@@ -416,7 +489,7 @@ impl<'de, 'b> serde::de::Deserializer<'de> for Deserializer<'de, 'b> {
         _: &'static str,
         _: &'static [&'static str],
         visitor: V,
-    ) -> Result<V::Value, Error> {
+    ) -> Result<V::Value, MarshalDeserializeError> {
         self.deserialize_map(visitor)
     }
 
@@ -425,7 +498,7 @@ impl<'de, 'b> serde::de::Deserializer<'de> for Deserializer<'de, 'b> {
         _: &'static str,
         _: &'static [&'static str],
         visitor: V,
-    ) -> Result<V::Value, Error> {
+    ) -> Result<V::Value, MarshalDeserializeError> {
         let val = self.resolve(self.idx)?;
         match val {
             MarshalValue::Symbol(_) | MarshalValue::SymbolLink(_) | MarshalValue::String(_) => {
@@ -448,11 +521,17 @@ impl<'de, 'b> serde::de::Deserializer<'de> for Deserializer<'de, 'b> {
         }
     }
 
-    fn deserialize_identifier<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+    fn deserialize_identifier<V: Visitor<'de>>(
+        self,
+        visitor: V,
+    ) -> Result<V::Value, MarshalDeserializeError> {
         self.deserialize_str(visitor)
     }
 
-    fn deserialize_ignored_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+    fn deserialize_ignored_any<V: Visitor<'de>>(
+        self,
+        visitor: V,
+    ) -> Result<V::Value, MarshalDeserializeError> {
         visitor.visit_unit()
     }
 }
@@ -465,7 +544,7 @@ mod tests {
     use std::collections::HashMap;
 
     use crate::{
-        deserializer::{Error, from_marshal_data},
+        deserializer::{MarshalDeserializeError, from_marshal_data},
         deserializer_types::{
             Ignored,
             ivar::{Ivar, WithEncoding},
@@ -476,7 +555,9 @@ mod tests {
     };
 
     // Helper to parse and deserialize
-    fn de_from_ruby<'a, T: Deserialize<'a>>(data: &'a MarshalData<'a>) -> Result<T, Error> {
+    fn de_from_ruby<'a, T: Deserialize<'a>>(
+        data: &'a MarshalData<'a>,
+    ) -> Result<T, MarshalDeserializeError> {
         from_marshal_data(data)
     }
 
@@ -768,7 +849,7 @@ mod tests {
         // because Instance is a sequence, not a string
         let bytes = b"\x04\x08I\"\x0ahello\x06:\x06ET";
         let data = marshal::parse(bytes).unwrap();
-        let result: Result<&str, Error> = de_from_ruby(&data);
+        let result: Result<&str, MarshalDeserializeError> = de_from_ruby(&data);
         assert!(result.is_err());
     }
 
@@ -862,7 +943,7 @@ mod tests {
             x: i32,
         }
         let data = marshal::parse(OBJECT_PT).unwrap();
-        let result: Result<Pt, Error> = de_from_ruby(&data);
+        let result: Result<Pt, MarshalDeserializeError> = de_from_ruby(&data);
         assert!(result.is_err());
     }
 

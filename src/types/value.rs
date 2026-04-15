@@ -2,9 +2,12 @@ use std::sync::Arc;
 
 use num_bigint::BigInt;
 
-use crate::cursor::{
-    object_table::{ObjectIdx, ObjectRefIdx},
-    symbol_table::SymbolIdx,
+use crate::{
+    cursor::{
+        object_table::{ObjectIdx, ObjectRefIdx},
+        symbol_table::SymbolIdx,
+    },
+    marshal::MarshalData,
 };
 
 use super::string::RbStr;
@@ -79,6 +82,13 @@ impl<'a> MarshalValue<'a> {
     }
 }
 
+impl<'a> TryFrom<MarshalData<'a>> for OwnedMarshalValue {
+    type Error = ();
+    fn try_from(_: MarshalData<'a>) -> Result<Self, Self::Error> {
+        todo!()
+    }
+}
+
 // todo: wire this up
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
@@ -89,7 +99,7 @@ enum OwnedMarshalValue {
     Fixnum(i32),
     Float(f64),
     Bignum(BigInt),
-    SymbolLink(SymbolIdx),
+    SymbolLink(Arc<[u8]>),
     Symbol(Arc<[u8]>),
     String(Arc<[u8]>),
     Regex {
@@ -102,40 +112,40 @@ enum OwnedMarshalValue {
         pairs: Vec<(Arc<OwnedMarshalValue>, Arc<OwnedMarshalValue>)>,
         default: Arc<OwnedMarshalValue>,
     },
-    ObjectRef(ObjectRefIdx),
+    ObjectRef(Arc<OwnedMarshalValue>),
     Object {
-        class: SymbolIdx,
-        ivars: Vec<(SymbolIdx, Arc<OwnedMarshalValue>)>,
+        class: Arc<[u8]>,
+        ivars: Vec<(Arc<[u8]>, Arc<OwnedMarshalValue>)>,
     },
     Struct {
-        name: SymbolIdx,
-        members: Vec<(SymbolIdx, Arc<OwnedMarshalValue>)>,
+        name: Arc<[u8]>,
+        members: Vec<(Arc<[u8]>, Arc<OwnedMarshalValue>)>,
     },
     Instance {
         inner: Arc<OwnedMarshalValue>,
-        ivars: Vec<(SymbolIdx, Arc<OwnedMarshalValue>)>,
+        ivars: Vec<(Arc<[u8]>, Arc<OwnedMarshalValue>)>,
     },
     Extended {
-        module: SymbolIdx,
+        module: Arc<[u8]>,
         inner: Arc<OwnedMarshalValue>,
     },
     Class(Arc<[u8]>),
     Module(Arc<[u8]>),
     ClassOrModule(Arc<[u8]>),
     UserDefined {
-        class: SymbolIdx,
+        class: Arc<[u8]>,
         data: Vec<u8>,
     },
     UserMarshal {
-        class: SymbolIdx,
+        class: Arc<[u8]>,
         inner: Arc<OwnedMarshalValue>,
     },
     UserString {
-        class: SymbolIdx,
+        class: Arc<[u8]>,
         inner: Arc<OwnedMarshalValue>,
     },
     Data {
-        class: SymbolIdx,
+        class: Arc<[u8]>,
         inner: Arc<OwnedMarshalValue>,
     },
 }

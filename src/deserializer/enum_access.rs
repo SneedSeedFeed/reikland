@@ -1,6 +1,6 @@
 use serde::de::{DeserializeSeed, Visitor};
 
-use super::{Deserializer, Error, ErrorKind};
+use super::{Deserializer, MarshalDeserializeError, ErrorKind};
 use crate::{cursor::object_table::ObjectIdx, marshal::MarshalData};
 
 pub(crate) struct UnitVariantDeserializer<'a, 'b> {
@@ -8,13 +8,13 @@ pub(crate) struct UnitVariantDeserializer<'a, 'b> {
 }
 
 impl<'de, 'b> serde::de::EnumAccess<'de> for UnitVariantDeserializer<'de, 'b> {
-    type Error = Error;
+    type Error = MarshalDeserializeError;
     type Variant = UnitOnly;
 
     fn variant_seed<V: DeserializeSeed<'de>>(
         self,
         seed: V,
-    ) -> Result<(V::Value, Self::Variant), Error> {
+    ) -> Result<(V::Value, Self::Variant), MarshalDeserializeError> {
         let val = seed.deserialize(self.de)?;
         Ok((val, UnitOnly))
     }
@@ -23,13 +23,13 @@ impl<'de, 'b> serde::de::EnumAccess<'de> for UnitVariantDeserializer<'de, 'b> {
 pub(crate) struct UnitOnly;
 
 impl<'de> serde::de::VariantAccess<'de> for UnitOnly {
-    type Error = Error;
+    type Error = MarshalDeserializeError;
 
-    fn unit_variant(self) -> Result<(), Error> {
+    fn unit_variant(self) -> Result<(), MarshalDeserializeError> {
         Ok(())
     }
 
-    fn newtype_variant_seed<T: DeserializeSeed<'de>>(self, _seed: T) -> Result<T::Value, Error> {
+    fn newtype_variant_seed<T: DeserializeSeed<'de>>(self, _seed: T) -> Result<T::Value, MarshalDeserializeError> {
         Err(ErrorKind::TypeMismatch {
             expected: "unit variant",
             got: "newtype variant",
@@ -37,7 +37,7 @@ impl<'de> serde::de::VariantAccess<'de> for UnitOnly {
         .into())
     }
 
-    fn tuple_variant<V: Visitor<'de>>(self, _: usize, _: V) -> Result<V::Value, Error> {
+    fn tuple_variant<V: Visitor<'de>>(self, _: usize, _: V) -> Result<V::Value, MarshalDeserializeError> {
         Err(ErrorKind::TypeMismatch {
             expected: "unit variant",
             got: "tuple variant",
@@ -49,7 +49,7 @@ impl<'de> serde::de::VariantAccess<'de> for UnitOnly {
         self,
         _: &'static [&'static str],
         _: V,
-    ) -> Result<V::Value, Error> {
+    ) -> Result<V::Value, MarshalDeserializeError> {
         Err(ErrorKind::TypeMismatch {
             expected: "unit variant",
             got: "struct variant",
@@ -65,13 +65,13 @@ pub(crate) struct MapVariantDeserializer<'a, 'b> {
 }
 
 impl<'de, 'b> serde::de::EnumAccess<'de> for MapVariantDeserializer<'de, 'b> {
-    type Error = Error;
+    type Error = MarshalDeserializeError;
     type Variant = MapVariantAccess<'de, 'b>;
 
     fn variant_seed<V: DeserializeSeed<'de>>(
         self,
         seed: V,
-    ) -> Result<(V::Value, Self::Variant), Error> {
+    ) -> Result<(V::Value, Self::Variant), MarshalDeserializeError> {
         let key_de = Deserializer {
             data: self.data,
             idx: self.key_idx,
@@ -93,9 +93,9 @@ pub(crate) struct MapVariantAccess<'a, 'b> {
 }
 
 impl<'de, 'b> serde::de::VariantAccess<'de> for MapVariantAccess<'de, 'b> {
-    type Error = Error;
+    type Error = MarshalDeserializeError;
 
-    fn unit_variant(self) -> Result<(), Error> {
+    fn unit_variant(self) -> Result<(), MarshalDeserializeError> {
         Err(ErrorKind::TypeMismatch {
             expected: "variant with data",
             got: "unit",
@@ -103,7 +103,7 @@ impl<'de, 'b> serde::de::VariantAccess<'de> for MapVariantAccess<'de, 'b> {
         .into())
     }
 
-    fn newtype_variant_seed<T: DeserializeSeed<'de>>(self, seed: T) -> Result<T::Value, Error> {
+    fn newtype_variant_seed<T: DeserializeSeed<'de>>(self, seed: T) -> Result<T::Value, MarshalDeserializeError> {
         let de = Deserializer {
             data: self.data,
             idx: self.val_idx,
@@ -111,7 +111,7 @@ impl<'de, 'b> serde::de::VariantAccess<'de> for MapVariantAccess<'de, 'b> {
         seed.deserialize(de)
     }
 
-    fn tuple_variant<V: Visitor<'de>>(self, _: usize, visitor: V) -> Result<V::Value, Error> {
+    fn tuple_variant<V: Visitor<'de>>(self, _: usize, visitor: V) -> Result<V::Value, MarshalDeserializeError> {
         let de = Deserializer {
             data: self.data,
             idx: self.val_idx,
@@ -123,7 +123,7 @@ impl<'de, 'b> serde::de::VariantAccess<'de> for MapVariantAccess<'de, 'b> {
         self,
         _: &'static [&'static str],
         visitor: V,
-    ) -> Result<V::Value, Error> {
+    ) -> Result<V::Value, MarshalDeserializeError> {
         let de = Deserializer {
             data: self.data,
             idx: self.val_idx,

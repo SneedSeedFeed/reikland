@@ -21,12 +21,12 @@ impl<'a, 'b> SeqDeserializer<'a, 'b> {
 }
 
 impl<'de, 'b> SeqAccess<'de> for SeqDeserializer<'de, 'b> {
-    type Error = super::Error;
+    type Error = super::MarshalDeserializeError;
 
     fn next_element_seed<T: DeserializeSeed<'de>>(
         &mut self,
         seed: T,
-    ) -> Result<Option<T::Value>, super::Error> {
+    ) -> Result<Option<T::Value>, super::MarshalDeserializeError> {
         match self.iter.next() {
             Some(&idx) => {
                 let de = Deserializer {
@@ -67,12 +67,12 @@ impl<'a, 'b> InstanceSeqAccess<'a, 'b> {
 }
 
 impl<'de, 'b> SeqAccess<'de> for InstanceSeqAccess<'de, 'b> {
-    type Error = super::Error;
+    type Error = super::MarshalDeserializeError;
 
     fn next_element_seed<T: DeserializeSeed<'de>>(
         &mut self,
         seed: T,
-    ) -> Result<Option<T::Value>, super::Error> {
+    ) -> Result<Option<T::Value>, super::MarshalDeserializeError> {
         match self.state {
             0 => {
                 self.state = 1;
@@ -118,12 +118,12 @@ impl<'a, 'b> ClassedSeqAccess<'a, 'b> {
 }
 
 impl<'de, 'b> SeqAccess<'de> for ClassedSeqAccess<'de, 'b> {
-    type Error = super::Error;
+    type Error = super::MarshalDeserializeError;
 
     fn next_element_seed<T: DeserializeSeed<'de>>(
         &mut self,
         seed: T,
-    ) -> Result<Option<T::Value>, super::Error> {
+    ) -> Result<Option<T::Value>, super::MarshalDeserializeError> {
         match self.state {
             0 => {
                 self.state = 1;
@@ -175,12 +175,12 @@ impl<'a, 'b> ObjectSeqAccess<'a, 'b> {
 }
 
 impl<'de, 'b> SeqAccess<'de> for ObjectSeqAccess<'de, 'b> {
-    type Error = super::Error;
+    type Error = super::MarshalDeserializeError;
 
     fn next_element_seed<T: DeserializeSeed<'de>>(
         &mut self,
         seed: T,
-    ) -> Result<Option<T::Value>, super::Error> {
+    ) -> Result<Option<T::Value>, super::MarshalDeserializeError> {
         match self.state {
             0 => {
                 self.state = 1;
@@ -228,12 +228,12 @@ impl<'a, 'b> UserDefinedSeqAccess<'a, 'b> {
 }
 
 impl<'de, 'b> SeqAccess<'de> for UserDefinedSeqAccess<'de, 'b> {
-    type Error = super::Error;
+    type Error = super::MarshalDeserializeError;
 
     fn next_element_seed<T: DeserializeSeed<'de>>(
         &mut self,
         seed: T,
-    ) -> Result<Option<T::Value>, super::Error> {
+    ) -> Result<Option<T::Value>, super::MarshalDeserializeError> {
         match self.state {
             0 => {
                 self.state = 1;
@@ -278,12 +278,12 @@ impl<'a> RegexSeqAccess<'a> {
 }
 
 impl<'de> SeqAccess<'de> for RegexSeqAccess<'de> {
-    type Error = super::Error;
+    type Error = super::MarshalDeserializeError;
 
     fn next_element_seed<T: DeserializeSeed<'de>>(
         &mut self,
         seed: T,
-    ) -> Result<Option<T::Value>, super::Error> {
+    ) -> Result<Option<T::Value>, super::MarshalDeserializeError> {
         match self.state {
             0 => {
                 self.state = 1;
@@ -328,12 +328,12 @@ impl<'a, 'b> HashDefaultSeqAccess<'a, 'b> {
 }
 
 impl<'de, 'b> SeqAccess<'de> for HashDefaultSeqAccess<'de, 'b> {
-    type Error = super::Error;
+    type Error = super::MarshalDeserializeError;
 
     fn next_element_seed<T: DeserializeSeed<'de>>(
         &mut self,
         seed: T,
-    ) -> Result<Option<T::Value>, super::Error> {
+    ) -> Result<Option<T::Value>, super::MarshalDeserializeError> {
         match self.state {
             0 => {
                 self.state = 1;
@@ -366,19 +366,19 @@ pub(crate) struct HashPairsDeserializer<'a, 'b> {
 }
 
 impl<'de, 'b> serde::de::Deserializer<'de> for HashPairsDeserializer<'de, 'b> {
-    type Error = super::Error;
+    type Error = super::MarshalDeserializeError;
 
     fn deserialize_any<V: serde::de::Visitor<'de>>(
         self,
         visitor: V,
-    ) -> Result<V::Value, super::Error> {
+    ) -> Result<V::Value, super::MarshalDeserializeError> {
         visitor.visit_map(super::map::MapDeserializer::new(self.data, self.pairs))
     }
 
     fn deserialize_map<V: serde::de::Visitor<'de>>(
         self,
         visitor: V,
-    ) -> Result<V::Value, super::Error> {
+    ) -> Result<V::Value, super::MarshalDeserializeError> {
         self.deserialize_any(visitor)
     }
 
@@ -387,21 +387,21 @@ impl<'de, 'b> serde::de::Deserializer<'de> for HashPairsDeserializer<'de, 'b> {
         _name: &'static str,
         _fields: &'static [&'static str],
         visitor: V,
-    ) -> Result<V::Value, super::Error> {
+    ) -> Result<V::Value, super::MarshalDeserializeError> {
         self.deserialize_any(visitor)
     }
 
     fn deserialize_ignored_any<V: serde::de::Visitor<'de>>(
         self,
         visitor: V,
-    ) -> Result<V::Value, super::Error> {
+    ) -> Result<V::Value, super::MarshalDeserializeError> {
         visitor.visit_unit()
     }
 
     fn deserialize_unit<V: serde::de::Visitor<'de>>(
         self,
         visitor: V,
-    ) -> Result<V::Value, super::Error> {
+    ) -> Result<V::Value, super::MarshalDeserializeError> {
         visitor.visit_unit()
     }
 
@@ -409,7 +409,7 @@ impl<'de, 'b> serde::de::Deserializer<'de> for HashPairsDeserializer<'de, 'b> {
         self,
         _name: &'static str,
         visitor: V,
-    ) -> Result<V::Value, super::Error> {
+    ) -> Result<V::Value, super::MarshalDeserializeError> {
         visitor.visit_unit()
     }
 

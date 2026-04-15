@@ -31,6 +31,7 @@ struct DualKeyMap<K, V>(pub HashMap<K, V>); // keeps string keys, discards int k
 struct DualKeyMapInt<K, V>(pub HashMap<K, V>); // keeps int keys, discards string keys
 struct DualKeyVec<T>(pub Vec<T>); // keeps int-keyed values in insertion order
 struct DualKeyVecSparse<T>(pub Vec<T>); // keeps int-keyed values indexed by their key (no holes allowed)
+struct DualKeyVecSparseHoley<T>(pub Vec<Option<T>>); // keeps int-keyed values indexed by their key and allows holes by leaving Option::None
 ```
 
 All the struct types above implement `Deref`/`DerefMut` to their "main" field (the first generic) so you can use them without unwrapping in most cases.

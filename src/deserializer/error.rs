@@ -7,7 +7,7 @@ use crate::{marshal::ParseError, types::value::MarshalValue};
 
 #[derive(Debug, thiserror::Error)]
 #[error("{kind}")]
-pub struct Error {
+pub struct MarshalDeserializeError {
     #[from]
     kind: ErrorKind,
 }
@@ -22,6 +22,8 @@ pub(crate) enum ErrorKind {
     InvalidUtf8(#[from] Utf8Error),
     #[error("invalid symbol index {0}")]
     InvalidSymbolIndex(usize),
+    #[error("invalid object ref {0}")]
+    InvalidObjectRef(usize),
     #[error("expected {expected}, got {got}")]
     TypeMismatch {
         expected: &'static str,
@@ -49,20 +51,23 @@ pub(crate) enum ErrorKind {
     CyclicRef,
 }
 
-impl From<ParseError> for Error {
+impl From<ParseError> for MarshalDeserializeError {
     fn from(e: ParseError) -> Self {
         ErrorKind::Parse(e).into()
     }
 }
 
-impl serde::de::Error for Error {
+impl serde::de::Error for MarshalDeserializeError {
     fn custom<T: std::fmt::Display>(msg: T) -> Self {
         ErrorKind::Message(msg.to_string().into_boxed_str()).into()
     }
 }
 
 /// Shorthand for creating a [`ErrorKind::TypeMismatch`] error from a [`MarshalValue`].
-pub(crate) fn type_mismatch(expected: &'static str, got: &MarshalValue<'_>) -> Error {
+pub(crate) fn type_mismatch(
+    expected: &'static str,
+    got: &MarshalValue<'_>,
+) -> MarshalDeserializeError {
     ErrorKind::TypeMismatch {
         expected,
         got: got.as_snake_case(),

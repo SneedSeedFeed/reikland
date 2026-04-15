@@ -16,6 +16,7 @@ impl SymbolIdx {
     }
 }
 
+/// Table of all symbols collected from a marshal stream
 #[derive(Debug, Clone, Default)]
 pub struct SymbolTable<'a> {
     symbols: Vec<&'a RbStr>,

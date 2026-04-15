@@ -2,3 +2,6 @@
 
 # local copy of https://docs.ruby-lang.org/en/2.1.0/marshal_rdoc.html
 /marshal - *
+
+# i can't write markdown without a preview
+lib_rs_docs.md

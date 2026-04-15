@@ -216,11 +216,12 @@ impl<T> Drop for SparseVecBuilder<T> {
 
 /// Deserializes a map/hash in ruby that has a [`MixedKey`][super::mixed_key::MixedKey] key, discarding the [`MixedKey::Str`][super::mixed_key::MixedKey::Str] keys.
 /// Does not verify that discarded values aren't unique. DOES maintain the declared index from the format but does not allow holes. For a version that does not maintain indexes but may deserialize faster see [`DualKeyVec`].
+/// The OFFSET constant is subtracted from each index, primarily for cases where the deserialized data is 1-indexed to avoid leaving holes at 0.
 #[derive(Debug, Clone, Serialize)]
 #[repr(transparent)]
-pub struct DualKeyVecSparse<T>(pub Vec<T>);
+pub struct DualKeyVecSparse<T, const OFFSET: usize = 0>(pub Vec<T>);
 
-impl<'de, T> serde::Deserialize<'de> for DualKeyVecSparse<T>
+impl<'de, T, const OFFSET: usize> serde::Deserialize<'de> for DualKeyVecSparse<T, OFFSET>
 where
     T: Deserialize<'de>,
 {
@@ -228,13 +229,13 @@ where
     where
         D: serde::Deserializer<'de>,
     {
-        struct DualKeyVecVisitor<T>(PhantomData<fn() -> T>);
+        struct DualKeyVecVisitor<T, const OFFSET: usize>(PhantomData<fn() -> T>);
 
-        impl<'de, T> Visitor<'de> for DualKeyVecVisitor<T>
+        impl<'de, T, const OFFSET: usize> Visitor<'de> for DualKeyVecVisitor<T, OFFSET>
         where
             T: Deserialize<'de>,
         {
-            type Value = DualKeyVecSparse<T>;
+            type Value = Vec<T>;
 
             fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
                 formatter.write_str(
@@ -261,20 +262,26 @@ where
                             "key '{key}' should be a positive integer"
                         ))
                     })?;
+                    if OFFSET > index {
+                        return Err(serde::de::Error::custom(
+                            "overflow when subtracting OFFSET from index",
+                        ));
+                    }
+                    let index = index - OFFSET;
                     vec.insert(index, map.next_value::<T>()?);
                 }
 
-                vec.build()
-                    .ok_or_else(|| {
-                        serde::de::Error::custom(
-                            "DualKeyVecSparse found holes in indexes of source data",
-                        )
-                    })
-                    .map(DualKeyVecSparse)
+                vec.build().ok_or_else(|| {
+                    serde::de::Error::custom(
+                        "DualKeyVecSparse found holes in indexes of source data",
+                    )
+                })
             }
         }
 
-        deserializer.deserialize_map(DualKeyVecVisitor(PhantomData))
+        deserializer
+            .deserialize_map(DualKeyVecVisitor::<T, OFFSET>(PhantomData))
+            .map(DualKeyVecSparse)
     }
 }
 

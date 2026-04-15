@@ -1,6 +1,6 @@
 use serde::de::{DeserializeSeed, MapAccess, Visitor};
 
-use super::{Deserializer, Error, ErrorKind, rb_str_to_str};
+use super::{Deserializer, MarshalDeserializeError, ErrorKind, rb_str_to_str};
 use crate::{
     cursor::{object_table::ObjectIdx, symbol_table::SymbolIdx},
     marshal::MarshalData,
@@ -22,12 +22,12 @@ impl<'a, 'b> MapDeserializer<'a, 'b> {
 }
 
 impl<'de, 'b> MapAccess<'de> for MapDeserializer<'de, 'b> {
-    type Error = Error;
+    type Error = MarshalDeserializeError;
 
     fn next_key_seed<K: DeserializeSeed<'de>>(
         &mut self,
         seed: K,
-    ) -> Result<Option<K::Value>, Error> {
+    ) -> Result<Option<K::Value>, MarshalDeserializeError> {
         match self.iter.next() {
             Some(&(key_idx, val_idx)) => {
                 self.value_idx = Some(val_idx);
@@ -41,7 +41,7 @@ impl<'de, 'b> MapAccess<'de> for MapDeserializer<'de, 'b> {
         }
     }
 
-    fn next_value_seed<V: DeserializeSeed<'de>>(&mut self, seed: V) -> Result<V::Value, Error> {
+    fn next_value_seed<V: DeserializeSeed<'de>>(&mut self, seed: V) -> Result<V::Value, MarshalDeserializeError> {
         let idx = self
             .value_idx
             .take()
@@ -75,12 +75,12 @@ impl<'a, 'b> IvarMapDeserializer<'a, 'b> {
 }
 
 impl<'de, 'b> MapAccess<'de> for IvarMapDeserializer<'de, 'b> {
-    type Error = Error;
+    type Error = MarshalDeserializeError;
 
     fn next_key_seed<K: DeserializeSeed<'de>>(
         &mut self,
         seed: K,
-    ) -> Result<Option<K::Value>, Error> {
+    ) -> Result<Option<K::Value>, MarshalDeserializeError> {
         match self.iter.next() {
             Some(&(sym_idx, val_idx)) => {
                 self.value_idx = Some(val_idx);
@@ -96,7 +96,7 @@ impl<'de, 'b> MapAccess<'de> for IvarMapDeserializer<'de, 'b> {
         }
     }
 
-    fn next_value_seed<V: DeserializeSeed<'de>>(&mut self, seed: V) -> Result<V::Value, Error> {
+    fn next_value_seed<V: DeserializeSeed<'de>>(&mut self, seed: V) -> Result<V::Value, MarshalDeserializeError> {
         let idx = self
             .value_idx
             .take()
@@ -118,25 +118,25 @@ pub(crate) struct SymbolNameDeserializer<'de> {
 }
 
 impl<'de> serde::de::Deserializer<'de> for SymbolNameDeserializer<'de> {
-    type Error = Error;
+    type Error = MarshalDeserializeError;
 
-    fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+    fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, MarshalDeserializeError> {
         visitor.visit_borrowed_str(self.name)
     }
 
-    fn deserialize_str<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+    fn deserialize_str<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, MarshalDeserializeError> {
         self.deserialize_any(visitor)
     }
 
-    fn deserialize_string<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+    fn deserialize_string<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, MarshalDeserializeError> {
         self.deserialize_any(visitor)
     }
 
-    fn deserialize_ignored_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+    fn deserialize_ignored_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, MarshalDeserializeError> {
         visitor.visit_unit()
     }
 
-    fn deserialize_unit<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+    fn deserialize_unit<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, MarshalDeserializeError> {
         visitor.visit_unit()
     }
 
@@ -144,7 +144,7 @@ impl<'de> serde::de::Deserializer<'de> for SymbolNameDeserializer<'de> {
         self,
         _name: &'static str,
         visitor: V,
-    ) -> Result<V::Value, Error> {
+    ) -> Result<V::Value, MarshalDeserializeError> {
         visitor.visit_unit()
     }
 
@@ -160,13 +160,13 @@ pub(crate) struct IvarsDeserializer<'a, 'b> {
 }
 
 impl<'de, 'b> serde::de::Deserializer<'de> for IvarsDeserializer<'de, 'b> {
-    type Error = Error;
+    type Error = MarshalDeserializeError;
 
-    fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+    fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, MarshalDeserializeError> {
         visitor.visit_map(IvarMapDeserializer::new(self.data, self.ivars))
     }
 
-    fn deserialize_map<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+    fn deserialize_map<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, MarshalDeserializeError> {
         self.deserialize_any(visitor)
     }
 
@@ -175,15 +175,15 @@ impl<'de, 'b> serde::de::Deserializer<'de> for IvarsDeserializer<'de, 'b> {
         _name: &'static str,
         _fields: &'static [&'static str],
         visitor: V,
-    ) -> Result<V::Value, Error> {
+    ) -> Result<V::Value, MarshalDeserializeError> {
         self.deserialize_any(visitor)
     }
 
-    fn deserialize_ignored_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+    fn deserialize_ignored_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, MarshalDeserializeError> {
         visitor.visit_unit()
     }
 
-    fn deserialize_unit<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
+    fn deserialize_unit<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, MarshalDeserializeError> {
         visitor.visit_unit()
     }
 
@@ -191,7 +191,7 @@ impl<'de, 'b> serde::de::Deserializer<'de> for IvarsDeserializer<'de, 'b> {
         self,
         _name: &'static str,
         visitor: V,
-    ) -> Result<V::Value, Error> {
+    ) -> Result<V::Value, MarshalDeserializeError> {
         visitor.visit_unit()
     }
 
