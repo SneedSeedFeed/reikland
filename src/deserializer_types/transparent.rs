@@ -5,6 +5,7 @@ use serde_core::de::{Deserializer, IntoDeserializer, SeqAccess, Visitor};
 
 /// A newtype wrapper that transparently handles sequence-wrapped values such as instance variables by taking the first member of teh sequence then draining the remainder
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[repr(transparent)]
 pub struct Transparent<T>(pub T);
 
 impl<T> Deref for Transparent<T> {
