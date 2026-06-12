@@ -30,7 +30,7 @@ impl<T> OneIndexedVec<T> {
         self.inner.get(idx.get() - 1)
     }
 
-    pub fn get_cp(&mut self, idx: NonZeroUsize) -> Option<T>
+    pub fn get_copy(&mut self, idx: NonZeroUsize) -> Option<T>
     where
         T: Copy,
     {
