@@ -37,7 +37,37 @@ impl std::fmt::Display for MarshalTypeByte {
 }
 
 impl MarshalTypeByte {
-    pub fn try_from_u8(byte: u8) -> Option<Self> {
+    pub const fn type_name(self) -> &'static str {
+        match self {
+            Self::True => "true",
+            Self::False => "false",
+            Self::Nil => "nil",
+            Self::Fixnum => "fixnum",
+            Self::Symbol => "symbol",
+            Self::SymbolLink => "symbol_link",
+            Self::ObjectReference => "object_ref",
+            Self::Instance => "instance",
+            Self::Extended => "extended",
+            Self::Array => "array",
+            Self::Bignum => "bignum",
+            Self::Class => "class",
+            Self::Module => "module",
+            Self::Data => "data",
+            Self::Float => "float",
+            Self::Hash => "hash",
+            Self::HashDefault => "hash_default",
+            Self::Object => "object",
+            Self::RegularExpression => "regex",
+            Self::String => "string",
+            Self::Struct => "struct",
+            Self::UserString => "user_string",
+            Self::UserDefined => "user_defined",
+            Self::UserMarshal => "user_marshal",
+            Self::ClassOrModule => "class_or_module",
+        }
+    }
+
+    pub const fn try_from_u8(byte: u8) -> Option<Self> {
         match byte {
             b'T' => Some(Self::True),
             b'F' => Some(Self::False),
