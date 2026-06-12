@@ -53,6 +53,8 @@ pub mod marshal;
 pub mod types;
 pub mod version_number;
 
+pub(crate) mod object_tracker;
+
 pub use deserializer::{from_bytes, from_marshal_data};
 pub use deserializer_types::{
     Encoding, Ignored, Ivar, MixedKey, MixedKeyRef, RbHashDefault, RbObject, RbRegex, RbStruct,
