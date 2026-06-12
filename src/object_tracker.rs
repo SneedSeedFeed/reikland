@@ -29,6 +29,13 @@ impl<T> OneIndexedVec<T> {
     pub fn get(&mut self, idx: NonZeroUsize) -> Option<&T> {
         self.inner.get(idx.get() - 1)
     }
+
+    pub fn get_cp(&mut self, idx: NonZeroUsize) -> Option<T>
+    where
+        T: Copy,
+    {
+        self.inner.get(idx.get() - 1).copied()
+    }
 }
 
 impl<T> Index<NonZeroUsize> for OneIndexedVec<T> {
