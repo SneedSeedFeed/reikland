@@ -1,38 +1,47 @@
-use crate::{
-    cursor::{
-        object_table::{ObjectIdx, ObjectTable},
-        symbol_table::{SymbolIdx, SymbolTable},
-    },
-    types::{string::RbStr, value::MarshalValue},
-};
-
-pub mod object_table;
-pub mod symbol_table;
-
 // todo: better name than `Cursor` maybe? since im shadowing std::io::CUrsor
-/// Cursor over bytes in Ruby marshal format, tracks symbols and objects. You probably don't need to interact with this.
+/// Cursor over bytes in Ruby marshal format. 
+/// Tracks its absolute position so values can be revisited when resolving object references (`@`).
 pub struct Cursor<'a> {
-    slice: &'a [u8],
-    symbols: SymbolTable<'a>,
-    objects: ObjectTable<'a>,
+    input: &'a [u8],
+    pos: usize,
 }
 
 impl<'a> Cursor<'a> {
     /// Create a new [`Cursor`]
-    pub fn new(slice: &'a [u8]) -> Self {
-        Self {
-            slice,
-            symbols: SymbolTable::new(),
-            objects: ObjectTable::new(),
+    pub fn new(input: &'a [u8]) -> Self {
+        Self { input, pos: 0 }
+    }
+
+    /// The absolute byte offset of the next unread byte
+    pub const fn pos(&self) -> usize {
+        self.pos
+    }
+
+    /// Jump to an absolute byte offset
+    pub const fn set_pos(&mut self, pos: usize) {
+        self.pos = pos;
+    }
+
+    /// Look at the next byte without consuming it
+    pub const fn peek(&self) -> Option<u8> {
+        if self.pos < self.input.len() {
+            Some(self.input[self.pos])
+        } else {
+            None
         }
+    }
+
+    /// The bytes that have not been consumed yet
+    const fn remaining(&self) -> &'a [u8] {
+        self.input.split_at(self.pos).1
     }
 
     /// Array returning equivalent of [`Self::take_n`]
     pub const fn take_const<const N: usize>(&mut self) -> Option<&'a [u8; N]> {
-        let slice = self.slice.first_chunk::<N>();
+        let slice = self.remaining().first_chunk::<N>();
 
         if slice.is_some() {
-            self.slice = self.slice.split_at(N).1;
+            self.pos += N;
         }
 
         slice
@@ -40,20 +49,20 @@ impl<'a> Cursor<'a> {
 
     /// Take n bytes from this cursor
     pub const fn take_n(&mut self, n: usize) -> Option<&'a [u8]> {
-        if self.slice.len() < n {
+        let remaining = self.remaining();
+        if remaining.len() < n {
             None
         } else {
-            let (split, rem) = self.slice.split_at(n);
-            self.slice = rem;
-            Some(split)
+            self.pos += n;
+            Some(remaining.split_at(n).0)
         }
     }
 
     /// Take 1 byte from this cursor
     pub const fn take_1(&mut self) -> Option<u8> {
-        let val = self.slice.first().copied();
+        let val = self.peek();
         if val.is_some() {
-            self.slice = self.slice.split_at(1).1;
+            self.pos += 1;
         };
         val
     }
@@ -76,52 +85,12 @@ impl<'a> Cursor<'a> {
 
     /// How many bytes remain in this cursor's slice
     pub const fn len(&self) -> usize {
-        self.slice.len()
+        self.remaining().len()
     }
 
     /// Is this cursor's byte slice empty
     pub const fn is_empty(&self) -> bool {
-        self.slice.is_empty()
-    }
-
-    /// Push a symbol into the symbol table, returning its [`SymbolIdx`].
-    pub fn push_symbol(&mut self, symbol: &'a RbStr) -> SymbolIdx {
-        self.symbols.push(symbol)
-    }
-
-    /// Look up a symbol by index.
-    pub fn get_symbol(&self, idx: SymbolIdx) -> Option<&'a RbStr> {
-        self.symbols.get(idx)
-    }
-
-    /// Push a value into the object store, returning its [`ObjectIdx`].
-    pub fn push_object(&mut self, value: MarshalValue<'a>) -> ObjectIdx {
-        self.objects.push_object(value)
-    }
-
-    /// Register an object in the object reference table (for `@` links).
-    pub fn push_object_ref(&mut self, idx: ObjectIdx) {
-        self.objects.push_object_ref(idx);
-    }
-
-    /// How many object references are currently registered.
-    pub fn object_ref_count(&self) -> usize {
-        self.objects.object_ref_count()
-    }
-
-    /// Replace the most recently pushed object reference with a new target.
-    pub fn replace_last_object_ref(&mut self, idx: ObjectIdx) {
-        self.objects.replace_last_object_ref(idx);
-    }
-
-    /// Resolve a marshal `@` reference to an [`ObjectIdx`].
-    pub fn get_object_ref(&self, ref_idx: usize) -> Option<ObjectIdx> {
-        self.objects.get_by_ref(ref_idx)
-    }
-
-    /// Consume the cursor, returning the accumulated tables.
-    pub fn into_tables(self) -> (SymbolTable<'a>, ObjectTable<'a>) {
-        (self.symbols, self.objects)
+        self.len() == 0
     }
 }
 
@@ -162,9 +131,7 @@ impl TryFromCursor<'_> for u8 {
     type Error = std::convert::Infallible;
 
     fn try_from_cursor<'a>(cursor: &mut Cursor<'a>) -> Option<Result<Self, Self::Error>> {
-        let (byte, rem) = cursor.slice.split_first()?;
-        cursor.slice = rem;
-        Some(Ok(*byte))
+        cursor.take_1().map(Ok)
     }
 }
 
