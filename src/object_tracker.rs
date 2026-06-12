@@ -1,4 +1,7 @@
-use std::ops::{Index, IndexMut};
+use std::{
+    num::NonZeroUsize,
+    ops::{Index, IndexMut},
+};
 
 /// Tracks the byte every marshal value starts at, 1 indexed because marshal is <insert vomit emoji>
 pub(crate) type ValueTracker = OneIndexedVec<usize>;
@@ -22,21 +25,21 @@ impl<T> OneIndexedVec<T> {
         self.inner.push(item)
     }
 
-    pub fn get(&mut self, idx: usize) -> Option<&T> {
-        self.inner.get(idx + 1)
+    pub fn get(&mut self, idx: NonZeroUsize) -> Option<&T> {
+        self.inner.get(idx.get() - 1)
     }
 }
 
-impl<T> Index<usize> for OneIndexedVec<T> {
+impl<T> Index<NonZeroUsize> for OneIndexedVec<T> {
     type Output = T;
 
-    fn index(&self, index: usize) -> &Self::Output {
-        self.inner.index(index + 1)
+    fn index(&self, index: NonZeroUsize) -> &Self::Output {
+        self.inner.index(index.get() - 1)
     }
 }
 
-impl<T> IndexMut<usize> for OneIndexedVec<T> {
-    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
-        self.inner.index_mut(index + 1)
+impl<T> IndexMut<NonZeroUsize> for OneIndexedVec<T> {
+    fn index_mut(&mut self, index: NonZeroUsize) -> &mut Self::Output {
+        self.inner.index_mut(index.get() - 1)
     }
 }
