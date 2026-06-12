@@ -1,5 +1,5 @@
 // todo: better name than `Cursor` maybe? since im shadowing std::io::CUrsor
-/// Cursor over bytes in Ruby marshal format. 
+/// Cursor over bytes in Ruby marshal format.
 /// Tracks its absolute position so values can be revisited when resolving object references (`@`).
 pub struct Cursor<'a> {
     input: &'a [u8],
