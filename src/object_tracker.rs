@@ -3,8 +3,9 @@ use std::{
     ops::{Index, IndexMut},
 };
 
+// first byte is always the version number so we can use NonZeroUsize to allow for Option<T> to niche optimise
 /// Tracks the byte every marshal value starts at, 1 indexed because marshal is <insert vomit emoji>
-pub(crate) type ValueTracker = OneIndexedVec<usize>;
+pub(crate) type ValueTracker = OneIndexedVec<NonZeroUsize>;
 
 pub(crate) struct OneIndexedVec<T> {
     inner: Vec<T>,
