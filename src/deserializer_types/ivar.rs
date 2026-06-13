@@ -1,11 +1,12 @@
-use std::ops::{Deref, DerefMut};
+use std::{
+    marker::PhantomData,
+    ops::{Deref, DerefMut},
+};
 
 use serde_core::de::{Deserializer, MapAccess, SeqAccess, Visitor};
-use std::marker::PhantomData;
-
-use crate::types::encoding::RubyEncoding;
 
 use super::ignored::Ignored;
+use crate::types::encoding::RubyEncoding;
 
 /// Type for deserializing Ruby Instance variable wrappers.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

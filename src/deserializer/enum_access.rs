@@ -1,13 +1,12 @@
 use serde_core::de::{DeserializeSeed, Visitor};
 
-use super::{Deserializer, ErrorKind, MarshalDeserializeError};
-use crate::{cursor::object_table::ObjectIdx, marshal::MarshalData};
+use super::{Deserializer, ErrorKind, MarshalDeserializeError, map::SymbolNameDeserializer};
 
-pub(crate) struct UnitVariantDeserializer<'a, 'b> {
-    pub(crate) de: Deserializer<'a, 'b>,
+pub(crate) struct UnitVariantDeserializer<'de> {
+    pub(crate) name: &'de str,
 }
 
-impl<'de, 'b> serde_core::de::EnumAccess<'de> for UnitVariantDeserializer<'de, 'b> {
+impl<'de> serde_core::de::EnumAccess<'de> for UnitVariantDeserializer<'de> {
     type Error = MarshalDeserializeError;
     type Variant = UnitOnly;
 
@@ -15,7 +14,7 @@ impl<'de, 'b> serde_core::de::EnumAccess<'de> for UnitVariantDeserializer<'de, '
         self,
         seed: V,
     ) -> Result<(V::Value, Self::Variant), MarshalDeserializeError> {
-        let val = seed.deserialize(self.de)?;
+        let val = seed.deserialize(SymbolNameDeserializer { name: self.name })?;
         Ok((val, UnitOnly))
     }
 }
@@ -65,41 +64,28 @@ impl<'de> serde_core::de::VariantAccess<'de> for UnitOnly {
     }
 }
 
-pub(crate) struct MapVariantDeserializer<'a, 'b> {
-    pub(crate) data: &'b MarshalData<'a>,
-    pub(crate) key_idx: ObjectIdx,
-    pub(crate) val_idx: ObjectIdx,
+pub(crate) struct MapVariantDeserializer<'de, 'a> {
+    pub(crate) de: &'a mut Deserializer<'de>,
 }
 
-impl<'de, 'b> serde_core::de::EnumAccess<'de> for MapVariantDeserializer<'de, 'b> {
+impl<'de, 'a> serde_core::de::EnumAccess<'de> for MapVariantDeserializer<'de, 'a> {
     type Error = MarshalDeserializeError;
-    type Variant = MapVariantAccess<'de, 'b>;
+    type Variant = MapVariantAccess<'de, 'a>;
 
     fn variant_seed<V: DeserializeSeed<'de>>(
         self,
         seed: V,
     ) -> Result<(V::Value, Self::Variant), MarshalDeserializeError> {
-        let key_de = Deserializer {
-            data: self.data,
-            idx: self.key_idx,
-        };
-        let val = seed.deserialize(key_de)?;
-        Ok((
-            val,
-            MapVariantAccess {
-                data: self.data,
-                val_idx: self.val_idx,
-            },
-        ))
+        let val = seed.deserialize(&mut *self.de)?;
+        Ok((val, MapVariantAccess { de: self.de }))
     }
 }
 
-pub(crate) struct MapVariantAccess<'a, 'b> {
-    data: &'b MarshalData<'a>,
-    val_idx: ObjectIdx,
+pub(crate) struct MapVariantAccess<'de, 'a> {
+    de: &'a mut Deserializer<'de>,
 }
 
-impl<'de, 'b> serde_core::de::VariantAccess<'de> for MapVariantAccess<'de, 'b> {
+impl<'de> serde_core::de::VariantAccess<'de> for MapVariantAccess<'de, '_> {
     type Error = MarshalDeserializeError;
 
     fn unit_variant(self) -> Result<(), MarshalDeserializeError> {
@@ -114,11 +100,7 @@ impl<'de, 'b> serde_core::de::VariantAccess<'de> for MapVariantAccess<'de, 'b> {
         self,
         seed: T,
     ) -> Result<T::Value, MarshalDeserializeError> {
-        let de = Deserializer {
-            data: self.data,
-            idx: self.val_idx,
-        };
-        seed.deserialize(de)
+        seed.deserialize(self.de)
     }
 
     fn tuple_variant<V: Visitor<'de>>(
@@ -126,11 +108,7 @@ impl<'de, 'b> serde_core::de::VariantAccess<'de> for MapVariantAccess<'de, 'b> {
         _: usize,
         visitor: V,
     ) -> Result<V::Value, MarshalDeserializeError> {
-        let de = Deserializer {
-            data: self.data,
-            idx: self.val_idx,
-        };
-        serde_core::Deserializer::deserialize_seq(de, visitor)
+        serde_core::Deserializer::deserialize_seq(self.de, visitor)
     }
 
     fn struct_variant<V: Visitor<'de>>(
@@ -138,10 +116,6 @@ impl<'de, 'b> serde_core::de::VariantAccess<'de> for MapVariantAccess<'de, 'b> {
         _: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value, MarshalDeserializeError> {
-        let de = Deserializer {
-            data: self.data,
-            idx: self.val_idx,
-        };
-        serde_core::Deserializer::deserialize_map(de, visitor)
+        serde_core::Deserializer::deserialize_map(self.de, visitor)
     }
 }

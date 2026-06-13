@@ -1,7 +1,9 @@
-use std::ops::{Deref, DerefMut};
+use std::{
+    marker::PhantomData,
+    ops::{Deref, DerefMut},
+};
 
 use serde_core::de::{Deserializer, SeqAccess, Visitor};
-use std::marker::PhantomData;
 
 use super::ignored::Ignored;
 

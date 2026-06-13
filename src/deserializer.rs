@@ -1,24 +1,33 @@
-use serde_core::de::Visitor;
+use std::num::NonZeroUsize;
 
 use enum_access::{MapVariantDeserializer, UnitVariantDeserializer};
-
-use map::MapDeserializer;
+use map::{HashMapAccess, IvarMapAccess};
+use num_bigint::BigInt;
 use seq::{
-    ClassedSeqAccess, HashDefaultSeqAccess, InstanceSeqAccess, ObjectSeqAccess, RegexSeqAccess,
-    SeqDeserializer, UserDefinedSeqAccess,
+    ArraySeqAccess, ClassedSeqAccess, HashDefaultSeqAccess, InstanceSeqAccess, ObjectSeqAccess,
+    RegexSeqAccess, UserDefinedSeqAccess,
 };
+use serde_core::de::Visitor;
 
 use crate::{
-    cursor::{object_table::ObjectIdx, symbol_table::SymbolIdx},
-    marshal::MarshalData,
-    types::{string::RbStr, value::MarshalValue},
+    cursor::{Cursor, FromCursor, TryFromCursor},
+    types::{
+        fixnum::{FixNum, FixNumLen},
+        float::RbFloat,
+        regex::RbRegexStr,
+        string::RbStr,
+        type_byte::MarshalTypeByte,
+    },
+    version_number::VersionNumber,
 };
 
+pub mod config;
 mod enum_access;
 mod error;
 mod map;
 mod seq;
 
+pub use config::DeserializerConfig;
 pub(crate) use error::ErrorKind;
 pub use error::MarshalDeserializeError;
 use error::type_mismatch;
@@ -28,71 +37,358 @@ pub fn from_bytes<'a, T>(input: &'a [u8]) -> Result<T, MarshalDeserializeError>
 where
     T: serde_core::de::Deserialize<'a>,
 {
-    let data = crate::marshal::parse(input)?;
-    from_marshal_data(&data)
+    from_bytes_with_config(input, DeserializerConfig::new())
 }
 
-/// Deserialize a `T` from already-parsed [`MarshalData`].
-pub fn from_marshal_data<'a, T>(data: &MarshalData<'a>) -> Result<T, MarshalDeserializeError>
+/// Deserialize a `T` from raw Ruby Marshal bytes with a [`DeserializerConfig`].
+pub fn from_bytes_with_config<'a, T>(
+    input: &'a [u8],
+    config: DeserializerConfig,
+) -> Result<T, MarshalDeserializeError>
 where
     T: serde_core::de::Deserialize<'a>,
 {
-    let de = Deserializer {
-        data,
-        idx: data.root,
-    };
-    T::deserialize(de)
+    let mut de = Deserializer::with_config(input, config)?;
+    T::deserialize(&mut de)
 }
 
-pub(crate) struct Deserializer<'a, 'b> {
-    pub(crate) data: &'b MarshalData<'a>,
-    pub(crate) idx: ObjectIdx,
+/// Maximum nesting depth when replaying object references (`@`).
+const MAX_REF_DEPTH: usize = 128;
+
+/// Deserializer over Ruby marshal bytes
+pub struct Deserializer<'de> {
+    cursor: Cursor<'de>,
+    config: DeserializerConfig,
+    version: VersionNumber,
+    symbols: Vec<&'de RbStr>,
+    objects: Vec<NonZeroUsize>,
+    /// Offset of a wrapper (`I`/`e`/`C`) waiting for its inner value to claim it in the object table.
+    /// See [`Self::next_type_byte`].
+    pending_wrapper: Option<NonZeroUsize>,
+    replay_depth: usize,
 }
 
-/// Maximum depth for following [`MarshalValue::ObjectRef`] chains.
-const MAX_REF_DEPTH: usize = 256;
+impl<'de> Deserializer<'de> {
+    /// Create a deserializer with the default (strict) [`DeserializerConfig`], checking the version number.
+    pub fn new(input: &'de [u8]) -> Result<Self, MarshalDeserializeError> {
+        Self::with_config(input, DeserializerConfig::new())
+    }
 
-// todo: smarter cycle detection than just running up to a limit?
-impl<'a, 'b> Deserializer<'a, 'b> {
-    /// Follow [`MarshalValue::ObjectRef`] chains until we reach a concrete value, up to [`MAX_REF_DEPTH`] times.
-    fn resolve(&self, idx: ObjectIdx) -> Result<&'b MarshalValue<'a>, MarshalDeserializeError> {
-        let mut val = self.data.object(idx);
-        for _ in 0..MAX_REF_DEPTH {
-            match val {
-                MarshalValue::ObjectRef(ref_idx) => {
-                    let obj_idx = self
-                        .data
-                        .objects
-                        .get_by_ref(ref_idx.inner())
-                        .ok_or(ErrorKind::InvalidObjectRef(ref_idx.inner()))?;
-                    val = self.data.object(obj_idx);
+    /// Create a deserializer with the given [`DeserializerConfig`], checking the version number.
+    pub fn with_config(
+        input: &'de [u8],
+        config: DeserializerConfig,
+    ) -> Result<Self, MarshalDeserializeError> {
+        let mut cursor = Cursor::new(input);
+        let version: VersionNumber = cursor.take().ok_or(ErrorKind::UnexpectedEof)?;
+        if !version.can_read() {
+            return Err(ErrorKind::VersionNumber(version).into());
+        }
+
+        Ok(Self {
+            cursor,
+            config,
+            version,
+            symbols: Vec::new(),
+            objects: Vec::new(),
+            pending_wrapper: None,
+            replay_depth: 0,
+        })
+    }
+
+    /// The version number from the start of the input.
+    pub fn version(&self) -> VersionNumber {
+        self.version
+    }
+
+    fn take<T: FromCursor<'de>>(&mut self) -> Result<T, MarshalDeserializeError> {
+        self.cursor
+            .take()
+            .ok_or(ErrorKind::UnexpectedEof)
+            .map_err(Into::into)
+    }
+
+    fn try_take<T>(&mut self) -> Result<T, MarshalDeserializeError>
+    where
+        T: TryFromCursor<'de>,
+        ErrorKind: From<T::Error>,
+    {
+        match self.cursor.try_take::<T>() {
+            None => Err(ErrorKind::UnexpectedEof.into()),
+            Some(Ok(val)) => Ok(val),
+            Some(Err(e)) => Err(ErrorKind::from(e).into()),
+        }
+    }
+
+    fn take_n(&mut self, n: usize) -> Result<&'de [u8], MarshalDeserializeError> {
+        self.cursor
+            .take_n(n)
+            .ok_or(ErrorKind::UnexpectedEof)
+            .map_err(Into::into)
+    }
+
+    /// Read the type byte of the value starting at the cursor, maintaining the object table.
+    ///
+    /// Ruby assigns object table entries in pre-order: a value enters the table the moment its
+    /// type byte is read, before any of its children. The wrappers `I`/`e`/`C` are the
+    /// exception: they don't get an entry of their own, their inner value's entry points at
+    /// the (outermost) wrapper instead so that replaying the entry reproduces the whole
+    /// construct.
+    fn next_type_byte(&mut self) -> Result<MarshalTypeByte, MarshalDeserializeError> {
+        let offset = NonZeroUsize::new(self.cursor.pos());
+        let type_byte: MarshalTypeByte = self.try_take()?;
+
+        if self.replay_depth == 0 {
+            match type_byte {
+                // wrappers: the inner value claims the outermost wrapper's offset
+                MarshalTypeByte::Instance
+                | MarshalTypeByte::Extended
+                | MarshalTypeByte::UserString => {
+                    if self.pending_wrapper.is_none() {
+                        self.pending_wrapper = offset;
+                    }
                 }
-                _ => return Ok(val),
+                // these never enter the object table; a wrapper offset left dangling by e.g.
+                // an ivar'd symbol (`I:`) dies here, before the ivars could claim it
+                MarshalTypeByte::Nil
+                | MarshalTypeByte::True
+                | MarshalTypeByte::False
+                | MarshalTypeByte::Fixnum
+                | MarshalTypeByte::Symbol
+                | MarshalTypeByte::SymbolLink
+                | MarshalTypeByte::ObjectReference => {
+                    self.pending_wrapper = None;
+                }
+                // everything else registers
+                _ => {
+                    let offset = self
+                        .pending_wrapper
+                        .take()
+                        .or(offset)
+                        .expect("a marshal value cannot start at offset 0");
+                    self.objects.push(offset);
+                }
             }
         }
-        Err(ErrorKind::CyclicRef.into())
+
+        Ok(type_byte)
     }
 
-    /// Resolve a SymbolIdx to a UTF-8 string.
-    fn symbol_str(&self, idx: SymbolIdx) -> Result<&'a str, MarshalDeserializeError> {
-        let rb = self.resolve_symbol(idx)?;
-        rb_str_to_str(rb)
-    }
-
-    /// Resolve the current value as a map
-    fn resolve_as_hash(&self) -> Result<&'b [(ObjectIdx, ObjectIdx)], MarshalDeserializeError> {
-        let val = self.resolve(self.idx)?;
-        match val {
-            MarshalValue::Hash(pairs) | MarshalValue::HashDefault { pairs, .. } => Ok(pairs),
-            other => Err(type_mismatch("map", other)),
+    /// Finish reading a symbol whose type byte (`:` or `;`) was already consumed.
+    fn finish_symbol(
+        &mut self,
+        type_byte: MarshalTypeByte,
+    ) -> Result<&'de RbStr, MarshalDeserializeError> {
+        match type_byte {
+            MarshalTypeByte::Symbol => {
+                let rb: &'de RbStr = self.try_take()?;
+                if self.replay_depth == 0 {
+                    self.symbols.push(rb);
+                }
+                Ok(rb)
+            }
+            MarshalTypeByte::SymbolLink => {
+                let link = self.take::<FixNum>()?.inner();
+                usize::try_from(link)
+                    .ok()
+                    .and_then(|idx| self.symbols.get(idx).copied())
+                    .ok_or_else(|| ErrorKind::InvalidSymbolLink(link).into())
+            }
+            other => Err(ErrorKind::ExpectedSymbol(other).into()),
         }
     }
 
-    fn resolve_symbol(&self, idx: SymbolIdx) -> Result<&'a RbStr, MarshalDeserializeError> {
-        self.data
-            .symbol(idx)
-            .ok_or(ErrorKind::InvalidSymbolIndex(idx.inner()))
-            .map_err(MarshalDeserializeError::from)
+    /// Parse a symbol (`:` or `;`) in a position where only a symbol is allowed (class names,
+    /// ivar keys). These bypass [`Self::next_type_byte`] since they never touch the object table.
+    pub(crate) fn parse_symbol(&mut self) -> Result<&'de RbStr, MarshalDeserializeError> {
+        let type_byte: MarshalTypeByte = self.try_take()?;
+        self.finish_symbol(type_byte)
+    }
+
+    /// [`Self::parse_symbol`] converted to UTF-8.
+    fn symbol_str(&mut self) -> Result<&'de str, MarshalDeserializeError> {
+        rb_str_to_str(self.parse_symbol()?)
+    }
+
+    /// Resolve an object reference (`@`, type byte already consumed) by replaying the bytes of
+    /// the referenced value, continuing with `f` from there.
+    fn resolve_ref<R>(
+        &mut self,
+        f: &mut dyn FnMut(&mut Self, MarshalTypeByte) -> Result<R, MarshalDeserializeError>,
+    ) -> Result<R, MarshalDeserializeError> {
+        let link = self.take::<FixNum>()?.inner();
+        let offset = usize::try_from(link)
+            .ok()
+            .and_then(|idx| self.objects.get(idx).copied())
+            .ok_or(ErrorKind::InvalidObjectRef(link))?;
+
+        if self.replay_depth >= MAX_REF_DEPTH {
+            return Err(ErrorKind::CyclicRef.into());
+        }
+
+        let return_to = self.cursor.pos();
+        self.cursor.set_pos(offset.get());
+        self.replay_depth += 1;
+        let result = self.parse_value_dyn(f);
+        self.replay_depth -= 1;
+        self.cursor.set_pos(return_to);
+        result
+    }
+
+    /// Drive `f` with the concrete type byte of the next value, transparently resolving object
+    /// references and unwrapping whichever wrappers the [`DeserializerConfig`] flattens.
+    fn parse_value<R>(
+        &mut self,
+        f: impl FnOnce(&mut Self, MarshalTypeByte) -> Result<R, MarshalDeserializeError>,
+    ) -> Result<R, MarshalDeserializeError> {
+        let mut f = Some(f);
+        self.parse_value_dyn(&mut move |de, type_byte| {
+            (f.take().expect("parse_value dispatched twice"))(de, type_byte)
+        })
+    }
+
+    // `dyn` so the reference/wrapper recursion doesn't monomorphise infinitely
+    fn parse_value_dyn<R>(
+        &mut self,
+        f: &mut dyn FnMut(&mut Self, MarshalTypeByte) -> Result<R, MarshalDeserializeError>,
+    ) -> Result<R, MarshalDeserializeError> {
+        let type_byte = self.next_type_byte()?;
+        match type_byte {
+            MarshalTypeByte::ObjectReference => self.resolve_ref(f),
+            MarshalTypeByte::Instance if self.config.ivar_as_inner => {
+                let value = self.parse_value_dyn(f)?;
+                self.skip_ivars()?;
+                Ok(value)
+            }
+            MarshalTypeByte::Extended
+            | MarshalTypeByte::UserString
+            | MarshalTypeByte::UserMarshal
+            | MarshalTypeByte::Data
+                if self.config.classed_as_inner =>
+            {
+                self.parse_symbol()?;
+                self.parse_value_dyn(f)
+            }
+            concrete => f(self, concrete),
+        }
+    }
+
+    /// Parse past the value at the cursor without materialising it. Table bookkeeping still
+    /// happens so that later symbol/object links stay aligned.
+    pub(crate) fn skip_value(&mut self) -> Result<(), MarshalDeserializeError> {
+        let type_byte = self.next_type_byte()?;
+        match type_byte {
+            MarshalTypeByte::Nil | MarshalTypeByte::True | MarshalTypeByte::False => Ok(()),
+            MarshalTypeByte::Fixnum | MarshalTypeByte::ObjectReference => {
+                self.take::<FixNum>().map(drop)
+            }
+            MarshalTypeByte::Symbol | MarshalTypeByte::SymbolLink => {
+                self.finish_symbol(type_byte).map(drop)
+            }
+            MarshalTypeByte::Float
+            | MarshalTypeByte::String
+            | MarshalTypeByte::Class
+            | MarshalTypeByte::Module
+            | MarshalTypeByte::ClassOrModule => self.try_take::<&RbStr>().map(drop),
+            MarshalTypeByte::Bignum => {
+                self.take::<u8>()?; // sign
+                let len: FixNumLen = self.try_take()?;
+                self.take_n(len.inner() * 2).map(drop)
+            }
+            MarshalTypeByte::RegularExpression => self.try_take::<RbRegexStr>().map(drop),
+            MarshalTypeByte::Array => {
+                let len: FixNumLen = self.try_take()?;
+                for _ in 0..len.inner() {
+                    self.skip_value()?;
+                }
+                Ok(())
+            }
+            MarshalTypeByte::Hash => {
+                let len: FixNumLen = self.try_take()?;
+                self.skip_hash_pairs(len.inner())
+            }
+            MarshalTypeByte::HashDefault => {
+                let len: FixNumLen = self.try_take()?;
+                self.skip_hash_pairs(len.inner())?;
+                self.skip_value() // the default
+            }
+            MarshalTypeByte::Instance => {
+                self.skip_value()?;
+                self.skip_ivars()
+            }
+            MarshalTypeByte::Object | MarshalTypeByte::Struct => {
+                self.parse_symbol()?;
+                self.skip_ivars()
+            }
+            MarshalTypeByte::Extended
+            | MarshalTypeByte::UserString
+            | MarshalTypeByte::UserMarshal
+            | MarshalTypeByte::Data => {
+                self.parse_symbol()?;
+                self.skip_value()
+            }
+            MarshalTypeByte::UserDefined => {
+                self.parse_symbol()?;
+                let len: FixNumLen = self.try_take()?;
+                self.take_n(len.inner()).map(drop)
+            }
+        }
+    }
+
+    /// Skip an ivar/member list: a count followed by symbol-value pairs.
+    pub(crate) fn skip_ivars(&mut self) -> Result<(), MarshalDeserializeError> {
+        let len: FixNumLen = self.try_take()?;
+        for _ in 0..len.inner() {
+            self.parse_symbol()?;
+            self.skip_value()?;
+        }
+        Ok(())
+    }
+
+    /// Skip `pairs` key-value pairs.
+    pub(crate) fn skip_hash_pairs(&mut self, pairs: usize) -> Result<(), MarshalDeserializeError> {
+        for _ in 0..pairs {
+            self.skip_value()?;
+            self.skip_value()?;
+        }
+        Ok(())
+    }
+
+    /// visit_seq a Ruby Array of `len` elements, parsing past anything the visitor leaves.
+    fn drive_seq<V: Visitor<'de>>(
+        &mut self,
+        len: usize,
+        visitor: V,
+    ) -> Result<V::Value, MarshalDeserializeError> {
+        let mut access = ArraySeqAccess::new(self, len);
+        let value = visitor.visit_seq(&mut access)?;
+        access.finish()?;
+        Ok(value)
+    }
+
+    /// visit_map `pairs` key-value pairs, parsing past anything the visitor leaves.
+    pub(crate) fn drive_hash<V: Visitor<'de>>(
+        &mut self,
+        pairs: usize,
+        visitor: V,
+    ) -> Result<V::Value, MarshalDeserializeError> {
+        let mut access = HashMapAccess::new(self, pairs);
+        let value = visitor.visit_map(&mut access)?;
+        access.finish()?;
+        Ok(value)
+    }
+
+    /// visit_map an ivar/member list (count followed by symbol-value pairs), parsing past
+    /// anything the visitor leaves.
+    pub(crate) fn drive_ivar_map<V: Visitor<'de>>(
+        &mut self,
+        visitor: V,
+    ) -> Result<V::Value, MarshalDeserializeError> {
+        let len: FixNumLen = self.try_take()?;
+        let mut access = IvarMapAccess::new(self, len.inner());
+        let value = visitor.visit_map(&mut access)?;
+        access.finish()?;
+        Ok(value)
     }
 }
 
@@ -103,17 +399,19 @@ pub(crate) fn rb_str_to_str(rb: &RbStr) -> Result<&str, MarshalDeserializeError>
 }
 
 macro_rules! deserialize_int {
-    ($self:ident, $visitor:ident, $method:ident, $visit:ident, $ty:ty) => {
-        match $self.resolve($self.idx)? {
-            MarshalValue::Fixnum(n) => {
-                let v: $ty = (*n).try_into().map_err(|_| ErrorKind::IntegerOverflowI32 {
+    ($self:ident, $visitor:ident, $visit:ident, $ty:ty) => {
+        $self.parse_value(|de, type_byte| match type_byte {
+            MarshalTypeByte::Fixnum => {
+                let n = de.take::<FixNum>()?.inner();
+                let v: $ty = n.try_into().map_err(|_| ErrorKind::IntegerOverflowI32 {
                     target_type: stringify!($ty),
-                    value: *n,
+                    value: n,
                 })?;
                 $visitor.$visit(v)
             }
-            MarshalValue::Bignum(big) => {
-                let v: $ty = big
+            MarshalTypeByte::Bignum => {
+                let big: BigInt = de.try_take()?;
+                let v: $ty = (&big)
                     .try_into()
                     .map_err(|_| ErrorKind::IntegerOverflowBigInt {
                         target_type: stringify!($ty),
@@ -122,234 +420,266 @@ macro_rules! deserialize_int {
                 $visitor.$visit(v)
             }
             other => Err(type_mismatch("integer", other)),
-        }
+        })
     };
 }
 
-impl<'de, 'b> serde_core::de::Deserializer<'de> for Deserializer<'de, 'b> {
+impl<'de> serde_core::de::Deserializer<'de> for &mut Deserializer<'de> {
     type Error = MarshalDeserializeError;
 
     fn deserialize_any<V: Visitor<'de>>(
         self,
         visitor: V,
     ) -> Result<V::Value, MarshalDeserializeError> {
-        match self.resolve(self.idx)? {
-            MarshalValue::Nil => visitor.visit_unit(),
-            MarshalValue::True => visitor.visit_bool(true),
-            MarshalValue::False => visitor.visit_bool(false),
-            MarshalValue::Fixnum(n) => visitor.visit_i32(*n),
-            MarshalValue::Float(f) => visitor.visit_f64(*f),
-            MarshalValue::Bignum(big) => {
-                if let Ok(v) = i64::try_from(big) {
+        self.parse_value(|de, type_byte| match type_byte {
+            MarshalTypeByte::Nil => visitor.visit_unit(),
+            MarshalTypeByte::True => visitor.visit_bool(true),
+            MarshalTypeByte::False => visitor.visit_bool(false),
+            MarshalTypeByte::Fixnum => visitor.visit_i32(de.take::<FixNum>()?.inner()),
+            MarshalTypeByte::Float => visitor.visit_f64(de.try_take::<RbFloat>()?.inner()),
+            MarshalTypeByte::Bignum => {
+                let big: BigInt = de.try_take()?;
+                if let Ok(v) = i64::try_from(&big) {
                     visitor.visit_i64(v)
-                } else if let Ok(v) = u64::try_from(big) {
+                } else if let Ok(v) = u64::try_from(&big) {
                     visitor.visit_u64(v)
-                } else if let Ok(v) = i128::try_from(big) {
+                } else if let Ok(v) = i128::try_from(&big) {
                     visitor.visit_i128(v)
-                } else if let Ok(v) = u128::try_from(big) {
+                } else if let Ok(v) = u128::try_from(&big) {
                     visitor.visit_u128(v)
                 } else {
                     Err(ErrorKind::BignumTooLarge.into())
                 }
             }
-            MarshalValue::Class(rb)
-            | MarshalValue::Module(rb)
-            | MarshalValue::ClassOrModule(rb)
-            | MarshalValue::Symbol(rb)
-            | MarshalValue::String(rb) => match <&str>::try_from(*rb) {
-                Ok(s) => visitor.visit_borrowed_str(s),
-                Err(_) => visitor.visit_borrowed_bytes(rb.as_slice()),
-            },
-            MarshalValue::Regex { pattern, flags } => {
-                visitor.visit_seq(RegexSeqAccess::new(pattern, *flags))
-            }
-            MarshalValue::SymbolLink(sym_idx) => {
-                let symbol = self.resolve_symbol(*sym_idx)?;
-
-                match symbol.try_into() {
-                    Ok(utf8) => visitor.visit_borrowed_str(utf8),
-                    Err(_) => visitor.visit_borrowed_bytes(symbol),
+            MarshalTypeByte::Symbol | MarshalTypeByte::SymbolLink => {
+                let rb = de.finish_symbol(type_byte)?;
+                match <&str>::try_from(rb) {
+                    Ok(s) => visitor.visit_borrowed_str(s),
+                    Err(_) => visitor.visit_borrowed_bytes(rb.as_slice()),
                 }
             }
-            MarshalValue::Array(elems) => visitor.visit_seq(SeqDeserializer::new(self.data, elems)),
-            MarshalValue::Hash(pairs) => visitor.visit_map(MapDeserializer::new(self.data, pairs)),
-            MarshalValue::HashDefault { pairs, default } => {
-                visitor.visit_seq(HashDefaultSeqAccess::new(self.data, pairs, *default))
+            MarshalTypeByte::String
+            | MarshalTypeByte::Class
+            | MarshalTypeByte::Module
+            | MarshalTypeByte::ClassOrModule => {
+                let rb: &RbStr = de.try_take()?;
+                match <&str>::try_from(rb) {
+                    Ok(s) => visitor.visit_borrowed_str(s),
+                    Err(_) => visitor.visit_borrowed_bytes(rb.as_slice()),
+                }
             }
-            MarshalValue::Object { class, ivars }
-            | MarshalValue::Struct {
-                name: class,
-                members: ivars,
-            } => visitor.visit_seq(ObjectSeqAccess::new(self.data, *class, ivars)),
-            MarshalValue::Instance { inner, ivars } => {
-                visitor.visit_seq(InstanceSeqAccess::new(self.data, *inner, ivars))
+            MarshalTypeByte::RegularExpression => {
+                let (flags, pattern) = de.try_take::<RbRegexStr>()?.inner();
+                visitor.visit_seq(RegexSeqAccess::new(pattern, flags))
             }
-            MarshalValue::Extended { module, inner } => {
-                visitor.visit_seq(ClassedSeqAccess::new(self.data, *module, *inner))
+            MarshalTypeByte::Array => {
+                let len: FixNumLen = de.try_take()?;
+                de.drive_seq(len.inner(), visitor)
             }
-            MarshalValue::UserMarshal { class, inner }
-            | MarshalValue::UserString { class, inner }
-            | MarshalValue::Data { class, inner } => {
-                visitor.visit_seq(ClassedSeqAccess::new(self.data, *class, *inner))
+            MarshalTypeByte::Hash => {
+                let len: FixNumLen = de.try_take()?;
+                de.drive_hash(len.inner(), visitor)
             }
-            MarshalValue::UserDefined { class, data } => {
-                visitor.visit_seq(UserDefinedSeqAccess::new(self.data, *class, data))
+            MarshalTypeByte::HashDefault => {
+                let len: FixNumLen = de.try_take()?;
+                if de.config.hash_default_as_map {
+                    let value = de.drive_hash(len.inner(), visitor)?;
+                    de.skip_value()?; // the default
+                    Ok(value)
+                } else {
+                    let mut access = HashDefaultSeqAccess::new(de, len.inner());
+                    let value = visitor.visit_seq(&mut access)?;
+                    access.finish()?;
+                    Ok(value)
+                }
             }
-            other => Err(ErrorKind::UnsupportedType(other.as_snake_case()).into()),
-        }
+            MarshalTypeByte::Object | MarshalTypeByte::Struct => {
+                if de.config.object_as_map {
+                    de.parse_symbol()?;
+                    de.drive_ivar_map(visitor)
+                } else {
+                    let name = de.symbol_str()?;
+                    let mut access = ObjectSeqAccess::new(de, name);
+                    let value = visitor.visit_seq(&mut access)?;
+                    access.finish()?;
+                    Ok(value)
+                }
+            }
+            // `ivar_as_inner` was handled by parse_value
+            MarshalTypeByte::Instance => {
+                let mut access = InstanceSeqAccess::new(de);
+                let value = visitor.visit_seq(&mut access)?;
+                access.finish()?;
+                Ok(value)
+            }
+            // as was `classed_as_inner`
+            MarshalTypeByte::Extended
+            | MarshalTypeByte::UserString
+            | MarshalTypeByte::UserMarshal
+            | MarshalTypeByte::Data => {
+                let name = de.symbol_str()?;
+                let mut access = ClassedSeqAccess::new(de, name);
+                let value = visitor.visit_seq(&mut access)?;
+                access.finish()?;
+                Ok(value)
+            }
+            MarshalTypeByte::UserDefined => {
+                let name = de.symbol_str()?;
+                let len: FixNumLen = de.try_take()?;
+                let data = de.take_n(len.inner())?;
+                visitor.visit_seq(UserDefinedSeqAccess::new(name, data))
+            }
+            MarshalTypeByte::ObjectReference => {
+                unreachable!("object references are resolved before dispatch")
+            }
+        })
     }
 
     fn deserialize_bool<V: Visitor<'de>>(
         self,
         visitor: V,
     ) -> Result<V::Value, MarshalDeserializeError> {
-        match self.resolve(self.idx)? {
-            MarshalValue::True => visitor.visit_bool(true),
-            MarshalValue::False => visitor.visit_bool(false),
+        self.parse_value(|_, type_byte| match type_byte {
+            MarshalTypeByte::True => visitor.visit_bool(true),
+            MarshalTypeByte::False => visitor.visit_bool(false),
             other => Err(type_mismatch("bool", other)),
-        }
+        })
     }
 
     fn deserialize_i8<V: Visitor<'de>>(
         self,
         visitor: V,
     ) -> Result<V::Value, MarshalDeserializeError> {
-        deserialize_int!(self, visitor, deserialize_i8, visit_i8, i8)
+        deserialize_int!(self, visitor, visit_i8, i8)
     }
 
     fn deserialize_i16<V: Visitor<'de>>(
         self,
         visitor: V,
     ) -> Result<V::Value, MarshalDeserializeError> {
-        deserialize_int!(self, visitor, deserialize_i16, visit_i16, i16)
+        deserialize_int!(self, visitor, visit_i16, i16)
     }
 
     fn deserialize_i32<V: Visitor<'de>>(
         self,
         visitor: V,
     ) -> Result<V::Value, MarshalDeserializeError> {
-        deserialize_int!(self, visitor, deserialize_i32, visit_i32, i32)
+        deserialize_int!(self, visitor, visit_i32, i32)
     }
 
     fn deserialize_i64<V: Visitor<'de>>(
         self,
         visitor: V,
     ) -> Result<V::Value, MarshalDeserializeError> {
-        deserialize_int!(self, visitor, deserialize_i64, visit_i64, i64)
+        deserialize_int!(self, visitor, visit_i64, i64)
     }
 
     fn deserialize_i128<V: Visitor<'de>>(
         self,
         visitor: V,
     ) -> Result<V::Value, MarshalDeserializeError> {
-        deserialize_int!(self, visitor, deserialize_i128, visit_i128, i128)
+        deserialize_int!(self, visitor, visit_i128, i128)
     }
 
     fn deserialize_u8<V: Visitor<'de>>(
         self,
         visitor: V,
     ) -> Result<V::Value, MarshalDeserializeError> {
-        deserialize_int!(self, visitor, deserialize_u8, visit_u8, u8)
+        deserialize_int!(self, visitor, visit_u8, u8)
     }
 
     fn deserialize_u16<V: Visitor<'de>>(
         self,
         visitor: V,
     ) -> Result<V::Value, MarshalDeserializeError> {
-        deserialize_int!(self, visitor, deserialize_u16, visit_u16, u16)
+        deserialize_int!(self, visitor, visit_u16, u16)
     }
 
     fn deserialize_u32<V: Visitor<'de>>(
         self,
         visitor: V,
     ) -> Result<V::Value, MarshalDeserializeError> {
-        deserialize_int!(self, visitor, deserialize_u32, visit_u32, u32)
+        deserialize_int!(self, visitor, visit_u32, u32)
     }
 
     fn deserialize_u64<V: Visitor<'de>>(
         self,
         visitor: V,
     ) -> Result<V::Value, MarshalDeserializeError> {
-        deserialize_int!(self, visitor, deserialize_u64, visit_u64, u64)
+        deserialize_int!(self, visitor, visit_u64, u64)
     }
 
     fn deserialize_u128<V: Visitor<'de>>(
         self,
         visitor: V,
     ) -> Result<V::Value, MarshalDeserializeError> {
-        deserialize_int!(self, visitor, deserialize_u128, visit_u128, u128)
+        deserialize_int!(self, visitor, visit_u128, u128)
     }
 
     fn deserialize_f32<V: Visitor<'de>>(
         self,
         visitor: V,
     ) -> Result<V::Value, MarshalDeserializeError> {
-        match self.resolve(self.idx)? {
-            MarshalValue::Float(f) => visitor.visit_f32(*f as f32),
-            MarshalValue::Fixnum(n) => visitor.visit_f32(*n as f32),
+        self.parse_value(|de, type_byte| match type_byte {
+            MarshalTypeByte::Float => visitor.visit_f32(de.try_take::<RbFloat>()?.inner() as f32),
+            MarshalTypeByte::Fixnum => visitor.visit_f32(de.take::<FixNum>()?.inner() as f32),
             other => Err(type_mismatch("float", other)),
-        }
+        })
     }
 
     fn deserialize_f64<V: Visitor<'de>>(
         self,
         visitor: V,
     ) -> Result<V::Value, MarshalDeserializeError> {
-        match self.resolve(self.idx)? {
-            MarshalValue::Float(f) => visitor.visit_f64(*f),
-            MarshalValue::Fixnum(n) => visitor.visit_f64(*n as f64),
+        self.parse_value(|de, type_byte| match type_byte {
+            MarshalTypeByte::Float => visitor.visit_f64(de.try_take::<RbFloat>()?.inner()),
+            MarshalTypeByte::Fixnum => visitor.visit_f64(de.take::<FixNum>()?.inner() as f64),
             other => Err(type_mismatch("float", other)),
-        }
+        })
     }
 
     fn deserialize_char<V: Visitor<'de>>(
         self,
         visitor: V,
     ) -> Result<V::Value, MarshalDeserializeError> {
-        let val = self.resolve(self.idx)?;
-        let rb = match val {
-            MarshalValue::String(rb) | MarshalValue::Symbol(rb) => rb,
-            MarshalValue::SymbolLink(sym_idx) => self.resolve_symbol(*sym_idx)?,
-            other => {
-                return Err(type_mismatch("char", other));
+        self.parse_value(|de, type_byte| {
+            let rb = match type_byte {
+                MarshalTypeByte::String => de.try_take::<&RbStr>()?,
+                MarshalTypeByte::Symbol | MarshalTypeByte::SymbolLink => {
+                    de.finish_symbol(type_byte)?
+                }
+                other => return Err(type_mismatch("char", other)),
+            };
+            let s = rb_str_to_str(rb)?;
+            let mut chars = s.chars();
+            match (chars.next(), chars.next()) {
+                (Some(c), None) => visitor.visit_char(c),
+                _ => Err(ErrorKind::ExpectedSingleChar {
+                    len: s.chars().count(),
+                }
+                .into()),
             }
-        };
-        let s = rb_str_to_str(rb)?;
-        let mut chars = s.chars().collect::<Vec<_>>();
-        if chars.len() != 1 {
-            Err(ErrorKind::ExpectedSingleChar {
-                len: s.chars().count(),
-            }
-            .into())
-        } else {
-            visitor.visit_char(chars.pop().unwrap())
-        }
+        })
     }
 
     fn deserialize_str<V: Visitor<'de>>(
         self,
         visitor: V,
     ) -> Result<V::Value, MarshalDeserializeError> {
-        let val = self.resolve(self.idx)?;
-        match val {
-            MarshalValue::String(rb)
-            | MarshalValue::Symbol(rb)
-            | MarshalValue::Regex { pattern: rb, .. } => {
-                let s = rb_str_to_str(rb)?;
-                visitor.visit_borrowed_str(s)
-            }
-            MarshalValue::SymbolLink(sym_idx) => {
-                let s = self.symbol_str(*sym_idx)?;
-                visitor.visit_borrowed_str(s)
-            }
-            MarshalValue::Class(rb)
-            | MarshalValue::Module(rb)
-            | MarshalValue::ClassOrModule(rb) => {
-                let s = rb_str_to_str(rb)?;
-                visitor.visit_borrowed_str(s)
-            }
-            other => Err(type_mismatch("string", other)),
-        }
+        self.parse_value(|de, type_byte| {
+            let rb = match type_byte {
+                MarshalTypeByte::String
+                | MarshalTypeByte::Class
+                | MarshalTypeByte::Module
+                | MarshalTypeByte::ClassOrModule => de.try_take::<&RbStr>()?,
+                MarshalTypeByte::Symbol | MarshalTypeByte::SymbolLink => {
+                    de.finish_symbol(type_byte)?
+                }
+                MarshalTypeByte::RegularExpression => de.try_take::<RbRegexStr>()?.inner().1,
+                other => return Err(type_mismatch("string", other)),
+            };
+            visitor.visit_borrowed_str(rb_str_to_str(rb)?)
+        })
     }
 
     fn deserialize_string<V: Visitor<'de>>(
@@ -363,21 +693,20 @@ impl<'de, 'b> serde_core::de::Deserializer<'de> for Deserializer<'de, 'b> {
         self,
         visitor: V,
     ) -> Result<V::Value, MarshalDeserializeError> {
-        let val = self.resolve(self.idx)?;
-        match val {
-            MarshalValue::String(rb) | MarshalValue::Symbol(rb) => {
-                visitor.visit_borrowed_bytes(rb.as_slice())
+        self.parse_value(|de, type_byte| match type_byte {
+            MarshalTypeByte::String => {
+                visitor.visit_borrowed_bytes(de.try_take::<&RbStr>()?.as_slice())
             }
-            MarshalValue::SymbolLink(sym_idx) => {
-                let rb = self
-                    .data
-                    .symbol(*sym_idx)
-                    .ok_or(ErrorKind::InvalidSymbolIndex(sym_idx.inner()))?;
-                visitor.visit_borrowed_bytes(rb.as_slice())
+            MarshalTypeByte::Symbol | MarshalTypeByte::SymbolLink => {
+                visitor.visit_borrowed_bytes(de.finish_symbol(type_byte)?.as_slice())
             }
-            MarshalValue::UserDefined { data, .. } => visitor.visit_borrowed_bytes(data),
+            MarshalTypeByte::UserDefined => {
+                de.parse_symbol()?;
+                let len: FixNumLen = de.try_take()?;
+                visitor.visit_borrowed_bytes(de.take_n(len.inner())?)
+            }
             other => Err(type_mismatch("bytes", other)),
-        }
+        })
     }
 
     fn deserialize_byte_buf<V: Visitor<'de>>(
@@ -391,9 +720,15 @@ impl<'de, 'b> serde_core::de::Deserializer<'de> for Deserializer<'de, 'b> {
         self,
         visitor: V,
     ) -> Result<V::Value, MarshalDeserializeError> {
-        match self.resolve(self.idx)? {
-            MarshalValue::Nil => visitor.visit_none(),
-            _ => visitor.visit_some(self),
+        // nil is never the target of an object reference (Ruby doesn't register it), so
+        // peeking the raw byte is enough
+        match self.cursor.peek() {
+            Some(b'0') => {
+                self.next_type_byte()?;
+                visitor.visit_none()
+            }
+            Some(_) => visitor.visit_some(self),
+            None => Err(ErrorKind::UnexpectedEof.into()),
         }
     }
 
@@ -401,10 +736,10 @@ impl<'de, 'b> serde_core::de::Deserializer<'de> for Deserializer<'de, 'b> {
         self,
         visitor: V,
     ) -> Result<V::Value, MarshalDeserializeError> {
-        match self.resolve(self.idx)? {
-            MarshalValue::Nil => visitor.visit_unit(),
+        self.parse_value(|_, type_byte| match type_byte {
+            MarshalTypeByte::Nil => visitor.visit_unit(),
             other => Err(type_mismatch("nil/unit", other)),
-        }
+        })
     }
 
     fn deserialize_unit_struct<V: Visitor<'de>>(
@@ -427,36 +762,53 @@ impl<'de, 'b> serde_core::de::Deserializer<'de> for Deserializer<'de, 'b> {
         self,
         visitor: V,
     ) -> Result<V::Value, MarshalDeserializeError> {
-        let val = self.resolve(self.idx)?;
-        match val {
-            MarshalValue::Array(elems) => visitor.visit_seq(SeqDeserializer::new(self.data, elems)),
-            MarshalValue::Object { class, ivars }
-            | MarshalValue::Struct {
-                name: class,
-                members: ivars,
-            } => visitor.visit_seq(ObjectSeqAccess::new(self.data, *class, ivars)),
-            MarshalValue::Instance { inner, ivars } => {
-                visitor.visit_seq(InstanceSeqAccess::new(self.data, *inner, ivars))
+        self.parse_value(|de, type_byte| match type_byte {
+            MarshalTypeByte::Array => {
+                let len: FixNumLen = de.try_take()?;
+                de.drive_seq(len.inner(), visitor)
             }
-            MarshalValue::Extended { module, inner } => {
-                visitor.visit_seq(ClassedSeqAccess::new(self.data, *module, *inner))
+            MarshalTypeByte::Object | MarshalTypeByte::Struct if !de.config.object_as_map => {
+                let name = de.symbol_str()?;
+                let mut access = ObjectSeqAccess::new(de, name);
+                let value = visitor.visit_seq(&mut access)?;
+                access.finish()?;
+                Ok(value)
             }
-            MarshalValue::UserMarshal { class, inner }
-            | MarshalValue::UserString { class, inner }
-            | MarshalValue::Data { class, inner } => {
-                visitor.visit_seq(ClassedSeqAccess::new(self.data, *class, *inner))
+            MarshalTypeByte::Instance => {
+                let mut access = InstanceSeqAccess::new(de);
+                let value = visitor.visit_seq(&mut access)?;
+                access.finish()?;
+                Ok(value)
             }
-            MarshalValue::UserDefined { class, data } => {
-                visitor.visit_seq(UserDefinedSeqAccess::new(self.data, *class, data))
+            MarshalTypeByte::Extended
+            | MarshalTypeByte::UserString
+            | MarshalTypeByte::UserMarshal
+            | MarshalTypeByte::Data => {
+                let name = de.symbol_str()?;
+                let mut access = ClassedSeqAccess::new(de, name);
+                let value = visitor.visit_seq(&mut access)?;
+                access.finish()?;
+                Ok(value)
             }
-            MarshalValue::Regex { pattern, flags } => {
-                visitor.visit_seq(RegexSeqAccess::new(pattern, *flags))
+            MarshalTypeByte::UserDefined => {
+                let name = de.symbol_str()?;
+                let len: FixNumLen = de.try_take()?;
+                let data = de.take_n(len.inner())?;
+                visitor.visit_seq(UserDefinedSeqAccess::new(name, data))
             }
-            MarshalValue::HashDefault { pairs, default } => {
-                visitor.visit_seq(HashDefaultSeqAccess::new(self.data, pairs, *default))
+            MarshalTypeByte::RegularExpression => {
+                let (flags, pattern) = de.try_take::<RbRegexStr>()?.inner();
+                visitor.visit_seq(RegexSeqAccess::new(pattern, flags))
+            }
+            MarshalTypeByte::HashDefault if !de.config.hash_default_as_map => {
+                let len: FixNumLen = de.try_take()?;
+                let mut access = HashDefaultSeqAccess::new(de, len.inner());
+                let value = visitor.visit_seq(&mut access)?;
+                access.finish()?;
+                Ok(value)
             }
             other => Err(type_mismatch("sequence", other)),
-        }
+        })
     }
 
     fn deserialize_tuple<V: Visitor<'de>>(
@@ -480,8 +832,23 @@ impl<'de, 'b> serde_core::de::Deserializer<'de> for Deserializer<'de, 'b> {
         self,
         visitor: V,
     ) -> Result<V::Value, MarshalDeserializeError> {
-        let pairs = self.resolve_as_hash()?;
-        visitor.visit_map(MapDeserializer::new(self.data, pairs))
+        self.parse_value(|de, type_byte| match type_byte {
+            MarshalTypeByte::Hash => {
+                let len: FixNumLen = de.try_take()?;
+                de.drive_hash(len.inner(), visitor)
+            }
+            MarshalTypeByte::HashDefault => {
+                let len: FixNumLen = de.try_take()?;
+                let value = de.drive_hash(len.inner(), visitor)?;
+                de.skip_value()?; // the default
+                Ok(value)
+            }
+            MarshalTypeByte::Object | MarshalTypeByte::Struct if de.config.object_as_map => {
+                de.parse_symbol()?;
+                de.drive_ivar_map(visitor)
+            }
+            other => Err(type_mismatch("map", other)),
+        })
     }
 
     fn deserialize_struct<V: Visitor<'de>>(
@@ -499,26 +866,24 @@ impl<'de, 'b> serde_core::de::Deserializer<'de> for Deserializer<'de, 'b> {
         _: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value, MarshalDeserializeError> {
-        let val = self.resolve(self.idx)?;
-        match val {
-            MarshalValue::Symbol(_) | MarshalValue::SymbolLink(_) | MarshalValue::String(_) => {
-                visitor.visit_enum(UnitVariantDeserializer {
-                    de: Deserializer {
-                        data: self.data,
-                        idx: self.idx,
-                    },
-                })
+        self.parse_value(|de, type_byte| match type_byte {
+            MarshalTypeByte::Symbol | MarshalTypeByte::SymbolLink => {
+                let name = rb_str_to_str(de.finish_symbol(type_byte)?)?;
+                visitor.visit_enum(UnitVariantDeserializer { name })
             }
-            MarshalValue::Hash(pairs) if pairs.len() == 1 => {
-                let (key_idx, val_idx) = pairs[0];
-                visitor.visit_enum(MapVariantDeserializer {
-                    data: self.data,
-                    key_idx,
-                    val_idx,
-                })
+            MarshalTypeByte::String => {
+                let name = rb_str_to_str(de.try_take::<&RbStr>()?)?;
+                visitor.visit_enum(UnitVariantDeserializer { name })
+            }
+            MarshalTypeByte::Hash => {
+                let len: FixNumLen = de.try_take()?;
+                if len.inner() != 1 {
+                    return Err(ErrorKind::EnumHashLen(len.inner()).into());
+                }
+                visitor.visit_enum(MapVariantDeserializer { de })
             }
             other => Err(type_mismatch("enum (symbol or single-entry hash)", other)),
-        }
+        })
     }
 
     fn deserialize_identifier<V: Visitor<'de>>(
@@ -532,6 +897,7 @@ impl<'de, 'b> serde_core::de::Deserializer<'de> for Deserializer<'de, 'b> {
         self,
         visitor: V,
     ) -> Result<V::Value, MarshalDeserializeError> {
+        self.skip_value()?;
         visitor.visit_unit()
     }
 }
@@ -540,41 +906,40 @@ impl<'de, 'b> serde_core::de::Deserializer<'de> for Deserializer<'de, 'b> {
 #[cfg(test)]
 mod tests {
 
-    use serde::Deserialize;
     use std::collections::HashMap;
 
+    use serde::Deserialize;
+
     use crate::{
-        deserializer::{MarshalDeserializeError, from_marshal_data},
+        deserializer::{
+            DeserializerConfig, MarshalDeserializeError, from_bytes, from_bytes_with_config,
+        },
         deserializer_types::{
             Ignored,
             ivar::{Ivar, WithEncoding},
             rb_object::RbObject,
+            transparent::Transparent,
         },
-        marshal::{self, MarshalData},
         types::encoding::RubyEncoding,
     };
 
-    // Helper to parse and deserialize
-    fn de_from_ruby<'a, T: Deserialize<'a>>(
-        data: &'a MarshalData<'a>,
-    ) -> Result<T, MarshalDeserializeError> {
-        from_marshal_data(data)
+    // Helper to deserialize from raw marshal bytes
+    fn de_from_ruby<'a, T: Deserialize<'a>>(bytes: &'a [u8]) -> Result<T, MarshalDeserializeError> {
+        from_bytes(bytes)
     }
 
     #[test]
     fn test_nil_to_unit() {
         // Marshal.dump(nil) = \x04\x080
         let bytes = b"\x04\x080";
-        let data = marshal::parse(bytes).unwrap();
-        let result: () = de_from_ruby(&data).unwrap();
+        let result: () = de_from_ruby(bytes).unwrap();
         assert_eq!(result, ());
     }
 
     #[test]
     fn test_nil_to_option() {
         let bytes = b"\x04\x080";
-        let data = marshal::parse(bytes).unwrap();
-        let result: Option<i32> = de_from_ruby(&data).unwrap();
+        let result: Option<i32> = de_from_ruby(bytes).unwrap();
         assert_eq!(result, None);
     }
 
@@ -582,16 +947,14 @@ mod tests {
     fn test_bool_true() {
         // Marshal.dump(true) = \x04\x08T
         let bytes = b"\x04\x08T";
-        let data = marshal::parse(bytes).unwrap();
-        let result: bool = de_from_ruby(&data).unwrap();
+        let result: bool = de_from_ruby(bytes).unwrap();
         assert!(result);
     }
 
     #[test]
     fn test_bool_false() {
         let bytes = b"\x04\x08F";
-        let data = marshal::parse(bytes).unwrap();
-        let result: bool = de_from_ruby(&data).unwrap();
+        let result: bool = de_from_ruby(bytes).unwrap();
         assert!(!result);
     }
 
@@ -599,8 +962,7 @@ mod tests {
     fn test_fixnum_zero() {
         // Marshal.dump(0) = \x04\x08i\x00
         let bytes = b"\x04\x08i\x00";
-        let data = marshal::parse(bytes).unwrap();
-        let result: i32 = de_from_ruby(&data).unwrap();
+        let result: i32 = de_from_ruby(bytes).unwrap();
         assert_eq!(result, 0);
     }
 
@@ -608,16 +970,14 @@ mod tests {
     fn test_fixnum_positive() {
         // Marshal.dump(42) = \x04\x08i/
         let bytes = b"\x04\x08i/";
-        let data = marshal::parse(bytes).unwrap();
-        let result: i32 = de_from_ruby(&data).unwrap();
+        let result: i32 = de_from_ruby(bytes).unwrap();
         assert_eq!(result, 42);
     }
 
     #[test]
     fn test_fixnum_to_option_some() {
         let bytes = b"\x04\x08i/";
-        let data = marshal::parse(bytes).unwrap();
-        let result: Option<i32> = de_from_ruby(&data).unwrap();
+        let result: Option<i32> = de_from_ruby(bytes).unwrap();
         assert_eq!(result, Some(42));
     }
 
@@ -626,8 +986,7 @@ mod tests {
     fn test_float() {
         // Marshal.dump(3.14) = \x04\x08f\x093.14
         let bytes = b"\x04\x08f\x093.14";
-        let data = marshal::parse(bytes).unwrap();
-        let result: f64 = de_from_ruby(&data).unwrap();
+        let result: f64 = de_from_ruby(bytes).unwrap();
         assert!((result - 3.14).abs() < f64::EPSILON);
     }
 
@@ -635,8 +994,7 @@ mod tests {
     fn test_array_of_ints() {
         // Marshal.dump([1,2,3]) = \x04\x08[\x08i\x06i\x07i\x08
         let bytes = b"\x04\x08[\x08i\x06i\x07i\x08";
-        let data = marshal::parse(bytes).unwrap();
-        let result: Vec<i32> = de_from_ruby(&data).unwrap();
+        let result: Vec<i32> = de_from_ruby(bytes).unwrap();
         assert_eq!(result, vec![1, 2, 3]);
     }
 
@@ -644,18 +1002,16 @@ mod tests {
     fn test_symbol() {
         // Marshal.dump(:hello) = \x04\x08:\x0ahello
         let bytes = b"\x04\x08:\x0ahello";
-        let data = marshal::parse(bytes).unwrap();
-        let result: &str = de_from_ruby(&data).unwrap();
+        let result: &str = de_from_ruby(bytes).unwrap();
         assert_eq!(result, "hello");
     }
 
     #[test]
     fn test_string_with_instance_wrapper() {
         // Marshal.dump("hello") = \x04\x08I\"\x0ahello\x06:\x06ET
-        // Instance wrapping is now explicit - use Ivar<T> to unwrap
+        // Instance wrapping is explicit by default - use Ivar<T> to unwrap
         let bytes = b"\x04\x08I\"\x0ahello\x06:\x06ET";
-        let data = marshal::parse(bytes).unwrap();
-        let result: Ivar<&str> = de_from_ruby(&data).unwrap();
+        let result: Ivar<&str> = de_from_ruby(bytes).unwrap();
         assert_eq!(result.inner, "hello");
     }
 
@@ -663,8 +1019,7 @@ mod tests {
     fn test_string_ivar_with_ivars_captured() {
         // Same data, but capture the encoding ivar
         let bytes = b"\x04\x08I\"\x0ahello\x06:\x06ET";
-        let data = marshal::parse(bytes).unwrap();
-        let result: Ivar<&str, HashMap<&str, bool>> = de_from_ruby(&data).unwrap();
+        let result: Ivar<&str, HashMap<&str, bool>> = de_from_ruby(bytes).unwrap();
         assert_eq!(result.inner, "hello");
         assert_eq!(result.ivars.get("E"), Some(&true));
     }
@@ -673,8 +1028,7 @@ mod tests {
     fn test_instance_as_tuple() {
         // Instance can also be deserialized as a raw tuple
         let bytes = b"\x04\x08I\"\x0ahello\x06:\x06ET";
-        let data = marshal::parse(bytes).unwrap();
-        let result: (&str, HashMap<&str, bool>) = de_from_ruby(&data).unwrap();
+        let result: (&str, HashMap<&str, bool>) = de_from_ruby(bytes).unwrap();
         assert_eq!(result.0, "hello");
         assert_eq!(result.1.get("E"), Some(&true));
     }
@@ -684,8 +1038,7 @@ mod tests {
         // Marshal.dump({a: 1, b: 2}) = hash with symbol keys
         // \x04\x08{\x07:\x06ai\x06:\x06bi\x07
         let bytes = b"\x04\x08{\x07:\x06ai\x06:\x06bi\x07";
-        let data = marshal::parse(bytes).unwrap();
-        let result: HashMap<&str, i32> = de_from_ruby(&data).unwrap();
+        let result: HashMap<&str, i32> = de_from_ruby(bytes).unwrap();
         assert_eq!(result.get("a"), Some(&1));
         assert_eq!(result.get("b"), Some(&2));
     }
@@ -701,8 +1054,7 @@ mod tests {
         // Marshal.dump({x: 10, y: 20})
         // \x04\x08{\x07:\x06xi\x0f:\x06yi\x19
         let bytes = b"\x04\x08{\x07:\x06xi\x0f:\x06yi\x19";
-        let data = marshal::parse(bytes).unwrap();
-        let result: Point = de_from_ruby(&data).unwrap();
+        let result: Point = de_from_ruby(bytes).unwrap();
         assert_eq!(result, Point { x: 10, y: 20 });
     }
 
@@ -710,8 +1062,7 @@ mod tests {
     fn test_nested_array() {
         // Marshal.dump([1, [2, 3]])
         let bytes = b"\x04\x08[\x07i\x06[\x07i\x07i\x08";
-        let data = marshal::parse(bytes).unwrap();
-        let result: (i32, Vec<i32>) = de_from_ruby(&data).unwrap();
+        let result: (i32, Vec<i32>) = de_from_ruby(bytes).unwrap();
         assert_eq!(result, (1, vec![2, 3]));
     }
 
@@ -720,10 +1071,9 @@ mod tests {
     #[test]
     fn ivar_discard_ivars() {
         // Marshal.dump("hello") = I"\x0ahello\x06:\x06ET
-        // Ivar<T> (O=()) discards the encoding ivar
+        // Ivar<T> (O=Ignored) discards the encoding ivar
         let bytes = b"\x04\x08I\"\x0ahello\x06:\x06ET";
-        let data = marshal::parse(bytes).unwrap();
-        let result: Ivar<&str> = de_from_ruby(&data).unwrap();
+        let result: Ivar<&str> = de_from_ruby(bytes).unwrap();
         assert_eq!(result.inner, "hello");
         assert_eq!(result.ivars, Ignored);
     }
@@ -732,8 +1082,7 @@ mod tests {
     fn ivar_capture_as_hashmap() {
         // Capture ivars into a HashMap
         let bytes = b"\x04\x08I\"\x0ahello\x06:\x06ET";
-        let data = marshal::parse(bytes).unwrap();
-        let result: Ivar<&str, HashMap<&str, bool>> = de_from_ruby(&data).unwrap();
+        let result: Ivar<&str, HashMap<&str, bool>> = de_from_ruby(bytes).unwrap();
         assert_eq!(result.inner, "hello");
         assert_eq!(result.ivars.len(), 1);
         assert!(result.ivars["E"]);
@@ -743,8 +1092,7 @@ mod tests {
     fn ivar_as_raw_tuple() {
         // Instance can be deserialized as a plain tuple
         let bytes = b"\x04\x08I\"\x0ahello\x06:\x06ET";
-        let data = marshal::parse(bytes).unwrap();
-        let result: (&str, HashMap<&str, bool>) = de_from_ruby(&data).unwrap();
+        let result: (&str, HashMap<&str, bool>) = de_from_ruby(bytes).unwrap();
         assert_eq!(result.0, "hello");
         assert!(result.1["E"]);
     }
@@ -753,8 +1101,7 @@ mod tests {
     fn ivar_deref_to_inner() {
         // Ivar<T> derefs to T
         let bytes = b"\x04\x08I\"\x0ahello\x06:\x06ET";
-        let data = marshal::parse(bytes).unwrap();
-        let result: Ivar<&str> = de_from_ruby(&data).unwrap();
+        let result: Ivar<&str> = de_from_ruby(bytes).unwrap();
         let s: &str = &result;
         assert_eq!(s, "hello");
     }
@@ -763,8 +1110,7 @@ mod tests {
     fn ivar_utf8_encoding() {
         // E: true → UTF-8
         let bytes = b"\x04\x08I\"\x0ahello\x06:\x06ET";
-        let data = marshal::parse(bytes).unwrap();
-        let result: WithEncoding<&str> = de_from_ruby(&data).unwrap();
+        let result: WithEncoding<&str> = de_from_ruby(bytes).unwrap();
         assert_eq!(result.inner, "hello");
         assert_eq!(*result.ivars, RubyEncoding::Utf8);
     }
@@ -773,8 +1119,7 @@ mod tests {
     fn ivar_ascii_encoding() {
         // E: false → US-ASCII
         let bytes = b"\x04\x08I\"\x0ahello\x06:\x06EF";
-        let data = marshal::parse(bytes).unwrap();
-        let result: WithEncoding<&str> = de_from_ruby(&data).unwrap();
+        let result: WithEncoding<&str> = de_from_ruby(bytes).unwrap();
         assert_eq!(result.inner, "hello");
         assert_eq!(*result.ivars, RubyEncoding::UsAscii);
     }
@@ -785,8 +1130,7 @@ mod tests {
         // Marshal.dump("hello".encode("Shift_JIS"))
         // I"\x0ahello\x06:\x0dencoding"\x0eShift_JIS
         let bytes = b"\x04\x08I\"\x0ahello\x06:\x0dencoding\"\x0eShift_JIS";
-        let data = marshal::parse(bytes).unwrap();
-        let result: WithEncoding<&str> = de_from_ruby(&data).unwrap();
+        let result: WithEncoding<&str> = de_from_ruby(bytes).unwrap();
         assert_eq!(result.inner, "hello");
         assert_eq!(*result.ivars, RubyEncoding::ShiftJis);
     }
@@ -795,8 +1139,7 @@ mod tests {
     fn ivar_encoding_deref() {
         // Encoding derefs to RubyEncoding
         let bytes = b"\x04\x08I\"\x0ahello\x06:\x06ET";
-        let data = marshal::parse(bytes).unwrap();
-        let result: WithEncoding<&str> = de_from_ruby(&data).unwrap();
+        let result: WithEncoding<&str> = de_from_ruby(bytes).unwrap();
         let enc: &RubyEncoding = &result.ivars;
         assert_eq!(*enc, RubyEncoding::Utf8);
     }
@@ -806,7 +1149,6 @@ mod tests {
         // Instance with 2 ivars: E: true and another custom one
         // I"\x0ahello\x07:\x06ET:\x06xi\x2a  (E => true, x => 37)
         let bytes = b"\x04\x08I\"\x0ahello\x07:\x06ET:\x06xi\x2a";
-        let data = marshal::parse(bytes).unwrap();
         // Capture all ivars as a struct
         #[derive(Debug, Deserialize)]
         struct Meta {
@@ -814,7 +1156,7 @@ mod tests {
             encoding: bool,
             x: i32,
         }
-        let result: Ivar<&str, Meta> = de_from_ruby(&data).unwrap();
+        let result: Ivar<&str, Meta> = de_from_ruby(bytes).unwrap();
         assert_eq!(result.inner, "hello");
         assert!(result.ivars.encoding);
         assert_eq!(result.ivars.x, 37);
@@ -825,8 +1167,7 @@ mod tests {
         // Encoding skips unknown ivars
         // I"\x0ahello\x07:\x06ET:\x06xi\x2a
         let bytes = b"\x04\x08I\"\x0ahello\x07:\x06ET:\x06xi\x2a";
-        let data = marshal::parse(bytes).unwrap();
-        let result: WithEncoding<&str> = de_from_ruby(&data).unwrap();
+        let result: WithEncoding<&str> = de_from_ruby(bytes).unwrap();
         assert_eq!(result.inner, "hello");
         assert_eq!(*result.ivars, RubyEncoding::Utf8);
     }
@@ -836,8 +1177,7 @@ mod tests {
         // Array of Instance-wrapped strings: ["hello", "world"]
         // [\x07 I"\x0ahello\x06:\x06ET I"\x0aworld\x06:\x06ET
         let bytes = b"\x04\x08[\x07I\"\x0ahello\x06:\x06ETI\"\x0aworld\x06:\x06ET";
-        let data = marshal::parse(bytes).unwrap();
-        let result: Vec<Ivar<&str>> = de_from_ruby(&data).unwrap();
+        let result: Vec<Ivar<&str>> = de_from_ruby(bytes).unwrap();
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].inner, "hello");
         assert_eq!(result[1].inner, "world");
@@ -845,11 +1185,10 @@ mod tests {
 
     #[test]
     fn ivar_string_not_transparent() {
-        // Deserializing an Instance-wrapped string directly as &str should fail
+        // Deserializing an Instance-wrapped string directly as &str should fail by default
         // because Instance is a sequence, not a string
         let bytes = b"\x04\x08I\"\x0ahello\x06:\x06ET";
-        let data = marshal::parse(bytes).unwrap();
-        let result: Result<&str, MarshalDeserializeError> = de_from_ruby(&data);
+        let result: Result<&str, MarshalDeserializeError> = de_from_ruby(bytes);
         assert!(result.is_err());
     }
 
@@ -857,8 +1196,7 @@ mod tests {
     fn ivar_with_encoding_in_array() {
         // Array of WithEncoding strings
         let bytes = b"\x04\x08[\x07I\"\x0ahello\x06:\x06ETI\"\x0aworld\x06:\x06EF";
-        let data = marshal::parse(bytes).unwrap();
-        let result: Vec<WithEncoding<&str>> = de_from_ruby(&data).unwrap();
+        let result: Vec<WithEncoding<&str>> = de_from_ruby(bytes).unwrap();
         assert_eq!(result[0].inner, "hello");
         assert_eq!(*result[0].ivars, RubyEncoding::Utf8);
         assert_eq!(result[1].inner, "world");
@@ -879,7 +1217,7 @@ mod tests {
 
     #[test]
     fn object_discard_class() {
-        // RbObject<T> (N=()) discards the class name
+        // RbObject<T> (N=Ignored) discards the class name
         #[derive(Debug, Deserialize, PartialEq)]
         struct Pt {
             #[serde(rename = "@x")]
@@ -887,8 +1225,7 @@ mod tests {
             #[serde(rename = "@y")]
             y: i32,
         }
-        let data = marshal::parse(OBJECT_PT).unwrap();
-        let result: RbObject<Pt> = de_from_ruby(&data).unwrap();
+        let result: RbObject<Pt> = de_from_ruby(OBJECT_PT).unwrap();
         assert_eq!(result.fields, Pt { x: 10, y: 20 });
         assert_eq!(result.class, Ignored);
     }
@@ -903,20 +1240,18 @@ mod tests {
             #[serde(rename = "@y")]
             y: i32,
         }
-        let data = marshal::parse(OBJECT_PT).unwrap();
-        let result: RbObject<Pt, &str> = de_from_ruby(&data).unwrap();
+        let result: RbObject<Pt, &str> = de_from_ruby(OBJECT_PT).unwrap();
         assert_eq!(result.class, "Pt");
         assert_eq!(result.fields, Pt { x: 10, y: 20 });
     }
 
     #[test]
     fn object_as_raw_tuple() {
-        // Object can be deserialized as a plain tuple
-        let data = marshal::parse(OBJECT_PT).unwrap();
-        let result: (&str, HashMap<&str, i32>) = de_from_ruby(&data).unwrap();
-        assert_eq!(result.0, "Pt");
-        assert_eq!(result.1["@x"], 10);
-        assert_eq!(result.1["@y"], 20);
+        // Object can be deserialized as a plain tuple, useful fields first
+        let result: (HashMap<&str, i32>, &str) = de_from_ruby(OBJECT_PT).unwrap();
+        assert_eq!(result.0["@x"], 10);
+        assert_eq!(result.0["@y"], 20);
+        assert_eq!(result.1, "Pt");
     }
 
     #[test]
@@ -927,31 +1262,28 @@ mod tests {
             #[serde(rename = "@x")]
             x: i32,
         }
-        let data = marshal::parse(OBJECT_PT).unwrap();
-        let result: RbObject<Pt> = de_from_ruby(&data).unwrap();
+        let result: RbObject<Pt> = de_from_ruby(OBJECT_PT).unwrap();
         assert_eq!(result.x, 10); // accessed through Deref
     }
 
     #[test]
     fn object_not_transparent() {
-        // Deserializing an Object directly as a struct (without RbObject) should fail
-        // because Object is now a sequence, not a map
+        // Deserializing an Object directly as a struct (without RbObject) should fail by
+        // default because Object is a sequence, not a map
         #[derive(Debug, Deserialize)]
         #[allow(dead_code)]
         struct Pt {
             #[serde(rename = "@x")]
             x: i32,
         }
-        let data = marshal::parse(OBJECT_PT).unwrap();
-        let result: Result<Pt, MarshalDeserializeError> = de_from_ruby(&data);
+        let result: Result<Pt, MarshalDeserializeError> = de_from_ruby(OBJECT_PT);
         assert!(result.is_err());
     }
 
     #[test]
     fn object_fields_as_hashmap() {
         // Fields can be captured as a HashMap
-        let data = marshal::parse(OBJECT_PT).unwrap();
-        let result: RbObject<HashMap<&str, i32>> = de_from_ruby(&data).unwrap();
+        let result: RbObject<HashMap<&str, i32>> = de_from_ruby(OBJECT_PT).unwrap();
         assert_eq!(result.fields["@x"], 10);
         assert_eq!(result.fields["@y"], 20);
     }
@@ -964,8 +1296,7 @@ mod tests {
             x: i32,
             y: i32,
         }
-        let data = marshal::parse(STRUCT_PT).unwrap();
-        let result: RbObject<Pt> = de_from_ruby(&data).unwrap();
+        let result: RbObject<Pt> = de_from_ruby(STRUCT_PT).unwrap();
         assert_eq!(result.fields, Pt { x: 10, y: 20 });
     }
 
@@ -976,26 +1307,23 @@ mod tests {
             x: i32,
             y: i32,
         }
-        let data = marshal::parse(STRUCT_PT).unwrap();
-        let result: RbObject<Pt, &str> = de_from_ruby(&data).unwrap();
+        let result: RbObject<Pt, &str> = de_from_ruby(STRUCT_PT).unwrap();
         assert_eq!(result.class, "Pt");
         assert_eq!(result.fields, Pt { x: 10, y: 20 });
     }
 
     #[test]
     fn struct_as_raw_tuple() {
-        let data = marshal::parse(STRUCT_PT).unwrap();
-        let result: (&str, HashMap<&str, i32>) = de_from_ruby(&data).unwrap();
-        assert_eq!(result.0, "Pt");
-        assert_eq!(result.1["x"], 10);
-        assert_eq!(result.1["y"], 20);
+        let result: (HashMap<&str, i32>, &str) = de_from_ruby(STRUCT_PT).unwrap();
+        assert_eq!(result.0["x"], 10);
+        assert_eq!(result.0["y"], 20);
+        assert_eq!(result.1, "Pt");
     }
 
     #[test]
     fn object_in_array() {
         // Array of two Pt Objects: {x:1, y:2} and {x:3, y:4}
         let bytes = b"\x04\x08[\x07o:\x07Pt\x07:\x07@xi\x06:\x07@yi\x07o:\x07Pt\x07:\x07@xi\x08:\x07@yi\x09";
-        let data = marshal::parse(bytes).unwrap();
         #[derive(Debug, Deserialize, PartialEq)]
         struct Pt {
             #[serde(rename = "@x")]
@@ -1003,9 +1331,324 @@ mod tests {
             #[serde(rename = "@y")]
             y: i32,
         }
-        let result: Vec<RbObject<Pt>> = de_from_ruby(&data).unwrap();
+        let result: Vec<RbObject<Pt>> = de_from_ruby(bytes).unwrap();
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].fields, Pt { x: 1, y: 2 });
         assert_eq!(result[1].fields, Pt { x: 3, y: 4 });
+    }
+
+    // ---- Object reference (`@`) tests ----
+
+    // Marshal.dump([a, a]) where a = "hello":
+    // the array registers as object 0, the ivar'd string as object 1, so the second
+    // element is a link to 1: [\x07 I"\x0ahello\x06:\x06ET @\x06
+    const SHARED_STRING: &[u8] = b"\x04\x08[\x07I\"\x0ahello\x06:\x06ET@\x06";
+
+    #[test]
+    fn object_ref_resolves_to_shared_string() {
+        let result: Vec<Ivar<&str>> = de_from_ruby(SHARED_STRING).unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].inner, "hello");
+        assert_eq!(result[1].inner, "hello");
+    }
+
+    #[test]
+    fn object_ref_restores_position() {
+        // Marshal.dump([a, a, 42]) — parsing must continue after the link correctly
+        let bytes = b"\x04\x08[\x08I\"\x0ahello\x06:\x06ET@\x06i\x2f";
+        let result: (Ivar<&str>, Ivar<&str>, i32) = de_from_ruby(bytes).unwrap();
+        assert_eq!(result.0.inner, "hello");
+        assert_eq!(result.1.inner, "hello");
+        assert_eq!(result.2, 42);
+    }
+
+    #[test]
+    fn object_ref_resolves_after_skipped_value() {
+        // The first element is ignored, but the link to it must still resolve:
+        // skipping a value keeps registering objects
+        let result: (Ignored, Ivar<&str>) = de_from_ruby(SHARED_STRING).unwrap();
+        assert_eq!(result.1.inner, "hello");
+    }
+
+    #[test]
+    fn self_referential_array_errors_instead_of_hanging() {
+        // a = []; a << a; Marshal.dump(a) = [\x06@\x00 — the array links to itself
+        #[derive(Debug, Deserialize)]
+        struct Recursive(#[allow(dead_code)] Vec<Recursive>);
+
+        let bytes = b"\x04\x08[\x06@\x00";
+        let result: Result<Recursive, MarshalDeserializeError> = de_from_ruby(bytes);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn invalid_object_ref_errors() {
+        // a link to an object that was never registered
+        let bytes = b"\x04\x08[\x06@\x0a";
+        let result: Result<Vec<Ivar<&str>>, MarshalDeserializeError> = de_from_ruby(bytes);
+        assert!(result.is_err());
+    }
+
+    // ---- DeserializerConfig tests ----
+
+    #[test]
+    fn config_ivar_as_inner() {
+        // With ivar_as_inner the Instance wrapper vanishes
+        let config = DeserializerConfig::new().with_ivar_as_inner(true);
+        let bytes = b"\x04\x08I\"\x0ahello\x06:\x06ET";
+        let result: &str = from_bytes_with_config(bytes, config).unwrap();
+        assert_eq!(result, "hello");
+    }
+
+    #[test]
+    fn config_ivar_as_inner_in_array() {
+        let config = DeserializerConfig::new().with_ivar_as_inner(true);
+        let bytes = b"\x04\x08[\x07I\"\x0ahello\x06:\x06ETI\"\x0aworld\x06:\x06ET";
+        let result: Vec<&str> = from_bytes_with_config(bytes, config).unwrap();
+        assert_eq!(result, vec!["hello", "world"]);
+    }
+
+    #[test]
+    fn config_object_as_map() {
+        // With object_as_map an Object deserializes straight into a struct
+        #[derive(Debug, Deserialize, PartialEq)]
+        struct Pt {
+            #[serde(rename = "@x")]
+            x: i32,
+            #[serde(rename = "@y")]
+            y: i32,
+        }
+        let config = DeserializerConfig::new().with_object_as_map(true);
+        let result: Pt = from_bytes_with_config(OBJECT_PT, config).unwrap();
+        assert_eq!(result, Pt { x: 10, y: 20 });
+    }
+
+    #[test]
+    fn config_object_as_map_applies_to_structs() {
+        #[derive(Debug, Deserialize, PartialEq)]
+        struct Pt {
+            x: i32,
+            y: i32,
+        }
+        let config = DeserializerConfig::new().with_object_as_map(true);
+        let result: Pt = from_bytes_with_config(STRUCT_PT, config).unwrap();
+        assert_eq!(result, Pt { x: 10, y: 20 });
+    }
+
+    #[test]
+    fn config_classed_as_inner() {
+        // Marshal.dump of a UserMarshal class whose marshal_dump returns [1]
+        // U:\x08Foo[\x06i\x06
+        let config = DeserializerConfig::new().with_classed_as_inner(true);
+        let bytes = b"\x04\x08U:\x08Foo[\x06i\x06";
+        let result: Vec<i32> = from_bytes_with_config(bytes, config).unwrap();
+        assert_eq!(result, vec![1]);
+    }
+
+    #[test]
+    fn config_hash_default_as_map() {
+        // Marshal.dump(Hash.new(42).tap { |h| h[:a] = 1 }) = }\x06:\x06ai\x06i\x2f
+        let config = DeserializerConfig::new().with_hash_default_as_map(true);
+        let bytes = b"\x04\x08}\x06:\x06ai\x06i\x2f";
+        let result: HashMap<&str, i32> = from_bytes_with_config(bytes, config).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result["a"], 1);
+    }
+
+    #[test]
+    fn config_opinionated_combo() {
+        // An Object with an ivar'd string field deserializes straight into plain Rust types
+        // o:\x07Pt\x06:\x0a@nameI"\x0ahello\x06:\x06ET
+        #[derive(Debug, Deserialize, PartialEq)]
+        struct Pt<'a> {
+            #[serde(rename = "@name")]
+            name: &'a str,
+        }
+        let bytes = b"\x04\x08o:\x07Pt\x06:\x0a@nameI\"\x0ahello\x06:\x06ET";
+        let result: Pt = from_bytes_with_config(bytes, DeserializerConfig::opinionated()).unwrap();
+        assert_eq!(result, Pt { name: "hello" });
+    }
+
+    #[test]
+    fn hash_default_as_plain_map_without_config() {
+        // deserialize_map has always accepted a HashDefault, skipping the default
+        let bytes = b"\x04\x08}\x06:\x06ai\x06i\x2f";
+        let result: HashMap<&str, i32> = de_from_ruby(bytes).unwrap();
+        assert_eq!(result["a"], 1);
+    }
+
+    #[test]
+    fn transparent_resolves_refs() {
+        let result: Vec<Transparent<&str>> = de_from_ruby(SHARED_STRING).unwrap();
+        assert_eq!(*result[0], "hello");
+        assert_eq!(*result[1], "hello");
+    }
+
+    // ---- Deeply wrapped values ----
+
+    // Marshal.dump(MyString.new("hello")) where: class MyString < String; end
+    // an Instance wrapping a UserClass wrapping a String: I C:\x0dMyString "\x0ahello ivars
+    const SUBCLASSED_STRING: &[u8] = b"\x04\x08IC:\x0dMyString\"\x0ahello\x06:\x06ET";
+
+    // h = {"a" => 1}; h.instance_variable_set(:@meta, 2)
+    // an Instance wrapping a Hash whose key is itself an ivar'd string
+    const HASH_WITH_IVARS: &[u8] = b"\x04\x08I{\x06I\"\x06a\x06:\x06ETi\x06\x06:\x0a@metai\x07";
+
+    // Marshal.dump(Item.new.extend(Magic)) where Item has @name = "x"
+    // an Extended wrapping an Object whose field is an ivar'd string
+    const EXTENDED_ITEM: &[u8] = b"\x04\x08e:\x0aMagico:\x09Item\x06:\x0a@nameI\"\x06x\x06:\x06ET";
+
+    #[test]
+    fn nested_wrappers_as_nested_tuples() {
+        // each wrapper layer is its own sequence: Instance(UserClass(String))
+        let result: Ivar<(&str, &str), HashMap<&str, bool>> =
+            de_from_ruby(SUBCLASSED_STRING).unwrap();
+        let (inner, class) = result.inner;
+        assert_eq!(inner, "hello");
+        assert_eq!(class, "MyString");
+        assert!(result.ivars["E"]);
+    }
+
+    #[test]
+    fn nested_wrappers_unwrap_with_nested_transparent() {
+        let result: Transparent<Transparent<&str>> = de_from_ruby(SUBCLASSED_STRING).unwrap();
+        assert_eq!(result.0.0, "hello");
+    }
+
+    #[test]
+    fn nested_wrappers_flatten_fully_opinionated() {
+        let result: &str =
+            from_bytes_with_config(SUBCLASSED_STRING, DeserializerConfig::opinionated()).unwrap();
+        assert_eq!(result, "hello");
+    }
+
+    #[test]
+    fn nested_wrapper_flags_compose_independently() {
+        // only the ivar layer is flattened, the user class layer keeps its sequence shape
+        let config = DeserializerConfig::new().with_ivar_as_inner(true);
+        let (inner, class): (&str, &str) =
+            from_bytes_with_config(SUBCLASSED_STRING, config).unwrap();
+        assert_eq!(inner, "hello");
+        assert_eq!(class, "MyString");
+    }
+
+    #[test]
+    fn chained_wrappers_register_one_object() {
+        // Marshal.dump([s, s]) where s = MyString.new("hello"): the whole I+C+" construct is
+        // a single object table entry, so the link must replay all three layers
+        let bytes = b"\x04\x08[\x07IC:\x0dMyString\"\x0ahello\x06:\x06ET@\x06";
+        let result: Vec<Transparent<Transparent<&str>>> = de_from_ruby(bytes).unwrap();
+        assert_eq!(result[0].0.0, "hello");
+        assert_eq!(result[1].0.0, "hello");
+    }
+
+    #[test]
+    fn hash_with_ivars() {
+        let result: Ivar<HashMap<Transparent<String>, i32>, HashMap<&str, i32>> =
+            de_from_ruby(HASH_WITH_IVARS).unwrap();
+        assert_eq!(result.inner[&Transparent("a".to_string())], 1);
+        assert_eq!(result.ivars["@meta"], 2);
+    }
+
+    #[test]
+    fn hash_with_ivars_opinionated() {
+        let result: HashMap<&str, i32> =
+            from_bytes_with_config(HASH_WITH_IVARS, DeserializerConfig::opinionated()).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result["a"], 1);
+    }
+
+    #[test]
+    fn extended_object_with_ivar_string_field() {
+        let (item, module): (RbObject<HashMap<&str, Ivar<&str>>, &str>, &str) =
+            de_from_ruby(EXTENDED_ITEM).unwrap();
+        assert_eq!(module, "Magic");
+        assert_eq!(item.class, "Item");
+        assert_eq!(item.fields["@name"].inner, "x");
+    }
+
+    #[test]
+    fn extended_object_flattens_opinionated() {
+        #[derive(Debug, Deserialize, PartialEq)]
+        struct Item<'a> {
+            #[serde(rename = "@name")]
+            name: &'a str,
+        }
+        let result: Item =
+            from_bytes_with_config(EXTENDED_ITEM, DeserializerConfig::opinionated()).unwrap();
+        assert_eq!(result, Item { name: "x" });
+    }
+
+    #[test]
+    fn user_marshal_of_ivar_strings() {
+        // U:\x08Foo wrapping ["hello", "world"]; the second string's :E ivar is emitted as a
+        // symbol link (;\x06) the way Ruby would
+        let bytes = b"\x04\x08U:\x08Foo[\x07I\"\x0ahello\x06:\x06ETI\"\x0aworld\x06;\x06T";
+        let (values, class): (Vec<Ivar<&str>>, &str) = de_from_ruby(bytes).unwrap();
+        assert_eq!(class, "Foo");
+        assert_eq!(values[0].inner, "hello");
+        assert_eq!(values[1].inner, "world");
+    }
+
+    // o:\x06A {@b => o:\x06B {@c => o:\x06C {@x => 1}}}
+    const NESTED_OBJECTS: &[u8] =
+        b"\x04\x08o:\x06A\x06:\x07@bo:\x06B\x06:\x07@co:\x06C\x06:\x07@xi\x06";
+
+    #[test]
+    fn objects_nested_three_deep() {
+        #[derive(Debug, Deserialize)]
+        struct AFields {
+            #[serde(rename = "@b")]
+            b: RbObject<BFields>,
+        }
+        #[derive(Debug, Deserialize)]
+        struct BFields {
+            #[serde(rename = "@c")]
+            c: RbObject<CFields>,
+        }
+        #[derive(Debug, Deserialize)]
+        struct CFields {
+            #[serde(rename = "@x")]
+            x: i32,
+        }
+
+        let result: RbObject<AFields> = de_from_ruby(NESTED_OBJECTS).unwrap();
+        assert_eq!(result.fields.b.fields.c.fields.x, 1);
+    }
+
+    #[test]
+    fn objects_nested_three_deep_opinionated() {
+        #[derive(Debug, Deserialize)]
+        struct A {
+            #[serde(rename = "@b")]
+            b: B,
+        }
+        #[derive(Debug, Deserialize)]
+        struct B {
+            #[serde(rename = "@c")]
+            c: C,
+        }
+        #[derive(Debug, Deserialize)]
+        struct C {
+            #[serde(rename = "@x")]
+            x: i32,
+        }
+
+        let result: A =
+            from_bytes_with_config(NESTED_OBJECTS, DeserializerConfig::opinionated()).unwrap();
+        assert_eq!(result.b.c.x, 1);
+    }
+
+    #[test]
+    fn tuple_shapes_put_the_useful_value_first() {
+        // every wrapper sequence leads with its useful value, so Transparent grabs the fields
+        // of an Object the same way it grabs the inner value of an Instance
+        let object: Transparent<HashMap<&str, i32>> = de_from_ruby(OBJECT_PT).unwrap();
+        assert_eq!(object.0["@x"], 10);
+
+        // U:\x08Foo[\x06i\x06 — UserMarshal of [1]
+        let user_marshal: Transparent<Vec<i32>> =
+            de_from_ruby(b"\x04\x08U:\x08Foo[\x06i\x06").unwrap();
+        assert_eq!(user_marshal.0, vec![1]);
     }
 }

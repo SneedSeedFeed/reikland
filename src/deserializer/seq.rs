@@ -1,270 +1,332 @@
-use serde_core::de::{DeserializeSeed, IntoDeserializer, SeqAccess};
+use serde_core::de::{DeserializeSeed, IntoDeserializer, SeqAccess, Visitor};
 
-use super::map::{IvarsDeserializer, SymbolNameDeserializer};
-use super::{Deserializer, ErrorKind, rb_str_to_str};
-use crate::cursor::symbol_table::SymbolIdx;
+use super::{
+    Deserializer, MarshalDeserializeError,
+    map::{IvarsDeserializer, SymbolNameDeserializer},
+    rb_str_to_str,
+};
 use crate::types::string::RbStr;
-use crate::{cursor::object_table::ObjectIdx, marshal::MarshalData};
 
-pub(crate) struct SeqDeserializer<'a, 'b> {
-    data: &'b MarshalData<'a>,
-    iter: std::slice::Iter<'b, ObjectIdx>,
+#[derive(Clone, Copy)]
+enum SeqState {
+    /// the first (useful) element is up next
+    First,
+    /// the second (extra information) element is up next
+    Second,
+    /// both elements have been served
+    Done,
 }
 
-impl<'a, 'b> SeqDeserializer<'a, 'b> {
-    pub(crate) fn new(data: &'b MarshalData<'a>, elems: &'b [ObjectIdx]) -> Self {
-        SeqDeserializer {
-            data,
-            iter: elems.iter(),
+impl SeqState {
+    fn remaining(self) -> usize {
+        match self {
+            SeqState::First => 2,
+            SeqState::Second => 1,
+            SeqState::Done => 0,
         }
     }
 }
 
-impl<'de, 'b> SeqAccess<'de> for SeqDeserializer<'de, 'b> {
-    type Error = super::MarshalDeserializeError;
+pub(crate) struct ArraySeqAccess<'de, 'a> {
+    de: &'a mut Deserializer<'de>,
+    remaining: usize,
+}
+
+impl<'de, 'a> ArraySeqAccess<'de, 'a> {
+    pub(crate) fn new(de: &'a mut Deserializer<'de>, len: usize) -> Self {
+        ArraySeqAccess { de, remaining: len }
+    }
+
+    pub(crate) fn finish(&mut self) -> Result<(), MarshalDeserializeError> {
+        for _ in 0..std::mem::take(&mut self.remaining) {
+            self.de.skip_value()?;
+        }
+        Ok(())
+    }
+}
+
+impl<'de> SeqAccess<'de> for ArraySeqAccess<'de, '_> {
+    type Error = MarshalDeserializeError;
 
     fn next_element_seed<T: DeserializeSeed<'de>>(
         &mut self,
         seed: T,
-    ) -> Result<Option<T::Value>, super::MarshalDeserializeError> {
-        match self.iter.next() {
-            Some(&idx) => {
-                let de = Deserializer {
-                    data: self.data,
-                    idx,
-                };
-                seed.deserialize(de).map(Some)
-            }
-            None => Ok(None),
+    ) -> Result<Option<T::Value>, MarshalDeserializeError> {
+        if self.remaining == 0 {
+            return Ok(None);
         }
+        self.remaining -= 1;
+        seed.deserialize(&mut *self.de).map(Some)
     }
 
     fn size_hint(&self) -> Option<usize> {
-        Some(self.iter.len())
+        Some(self.remaining)
     }
 }
 
-pub(crate) struct InstanceSeqAccess<'a, 'b> {
-    data: &'b MarshalData<'a>,
-    inner: ObjectIdx,
-    ivars: &'b [(SymbolIdx, ObjectIdx)],
-    state: u8,
+pub(crate) struct InstanceSeqAccess<'de, 'a> {
+    de: &'a mut Deserializer<'de>,
+    state: SeqState,
 }
 
-impl<'a, 'b> InstanceSeqAccess<'a, 'b> {
-    pub(crate) fn new(
-        data: &'b MarshalData<'a>,
-        inner: ObjectIdx,
-        ivars: &'b [(SymbolIdx, ObjectIdx)],
-    ) -> Self {
+impl<'de, 'a> InstanceSeqAccess<'de, 'a> {
+    pub(crate) fn new(de: &'a mut Deserializer<'de>) -> Self {
         InstanceSeqAccess {
-            data,
-            inner,
-            ivars,
-            state: 0,
+            de,
+            state: SeqState::First,
         }
+    }
+
+    pub(crate) fn finish(&mut self) -> Result<(), MarshalDeserializeError> {
+        match self.state {
+            SeqState::First => {
+                self.de.skip_value()?;
+                self.de.skip_ivars()?;
+            }
+            SeqState::Second => self.de.skip_ivars()?,
+            SeqState::Done => {}
+        }
+        self.state = SeqState::Done;
+        Ok(())
     }
 }
 
-impl<'de, 'b> SeqAccess<'de> for InstanceSeqAccess<'de, 'b> {
-    type Error = super::MarshalDeserializeError;
+impl<'de> SeqAccess<'de> for InstanceSeqAccess<'de, '_> {
+    type Error = MarshalDeserializeError;
 
     fn next_element_seed<T: DeserializeSeed<'de>>(
         &mut self,
         seed: T,
-    ) -> Result<Option<T::Value>, super::MarshalDeserializeError> {
+    ) -> Result<Option<T::Value>, MarshalDeserializeError> {
         match self.state {
-            0 => {
-                self.state = 1;
-                let de = Deserializer {
-                    data: self.data,
-                    idx: self.inner,
-                };
-                seed.deserialize(de).map(Some)
+            SeqState::First => {
+                self.state = SeqState::Second;
+                seed.deserialize(&mut *self.de).map(Some)
             }
-            1 => {
-                self.state = 2;
-                let de = IvarsDeserializer {
-                    data: self.data,
-                    ivars: self.ivars,
-                };
-                seed.deserialize(de).map(Some)
-            }
-            _ => Ok(None),
-        }
-    }
-
-    fn size_hint(&self) -> Option<usize> {
-        Some((2 - self.state as usize).min(2))
-    }
-}
-
-pub(crate) struct ClassedSeqAccess<'a, 'b> {
-    data: &'b MarshalData<'a>,
-    name: SymbolIdx,
-    inner: ObjectIdx,
-    state: u8,
-}
-
-impl<'a, 'b> ClassedSeqAccess<'a, 'b> {
-    pub(crate) fn new(data: &'b MarshalData<'a>, name: SymbolIdx, inner: ObjectIdx) -> Self {
-        ClassedSeqAccess {
-            data,
-            name,
-            inner,
-            state: 0,
-        }
-    }
-}
-
-impl<'de, 'b> SeqAccess<'de> for ClassedSeqAccess<'de, 'b> {
-    type Error = super::MarshalDeserializeError;
-
-    fn next_element_seed<T: DeserializeSeed<'de>>(
-        &mut self,
-        seed: T,
-    ) -> Result<Option<T::Value>, super::MarshalDeserializeError> {
-        match self.state {
-            0 => {
-                self.state = 1;
-                let rb = self
-                    .data
-                    .symbol(self.name)
-                    .ok_or(ErrorKind::InvalidSymbolIndex(self.name.inner()))?;
-                let s = rb_str_to_str(rb)?;
-                seed.deserialize(SymbolNameDeserializer { name: s })
+            SeqState::Second => {
+                self.state = SeqState::Done;
+                seed.deserialize(IvarsDeserializer { de: &mut *self.de })
                     .map(Some)
             }
-            1 => {
-                self.state = 2;
-                let de = Deserializer {
-                    data: self.data,
-                    idx: self.inner,
-                };
-                seed.deserialize(de).map(Some)
-            }
-            _ => Ok(None),
+            SeqState::Done => Ok(None),
         }
     }
 
     fn size_hint(&self) -> Option<usize> {
-        Some((2 - self.state as usize).min(2))
+        Some(self.state.remaining())
     }
 }
 
-pub(crate) struct ObjectSeqAccess<'a, 'b> {
-    data: &'b MarshalData<'a>,
-    name: SymbolIdx,
-    ivars: &'b [(SymbolIdx, ObjectIdx)],
-    state: u8,
+pub(crate) struct ObjectSeqAccess<'de, 'a> {
+    de: &'a mut Deserializer<'de>,
+    name: &'de str,
+    state: SeqState,
 }
 
-impl<'a, 'b> ObjectSeqAccess<'a, 'b> {
-    pub(crate) fn new(
-        data: &'b MarshalData<'a>,
-        name: SymbolIdx,
-        ivars: &'b [(SymbolIdx, ObjectIdx)],
-    ) -> Self {
+impl<'de, 'a> ObjectSeqAccess<'de, 'a> {
+    pub(crate) fn new(de: &'a mut Deserializer<'de>, name: &'de str) -> Self {
         ObjectSeqAccess {
-            data,
+            de,
             name,
-            ivars,
-            state: 0,
+            state: SeqState::First,
         }
+    }
+
+    pub(crate) fn finish(&mut self) -> Result<(), MarshalDeserializeError> {
+        match self.state {
+            SeqState::First => self.de.skip_ivars()?,
+            SeqState::Second | SeqState::Done => {}
+        }
+        self.state = SeqState::Done;
+        Ok(())
     }
 }
 
-impl<'de, 'b> SeqAccess<'de> for ObjectSeqAccess<'de, 'b> {
-    type Error = super::MarshalDeserializeError;
+impl<'de> SeqAccess<'de> for ObjectSeqAccess<'de, '_> {
+    type Error = MarshalDeserializeError;
 
     fn next_element_seed<T: DeserializeSeed<'de>>(
         &mut self,
         seed: T,
-    ) -> Result<Option<T::Value>, super::MarshalDeserializeError> {
+    ) -> Result<Option<T::Value>, MarshalDeserializeError> {
         match self.state {
-            0 => {
-                self.state = 1;
-                let rb = self
-                    .data
-                    .symbol(self.name)
-                    .ok_or(ErrorKind::InvalidSymbolIndex(self.name.inner()))?;
-                let s = rb_str_to_str(rb)?;
-                seed.deserialize(SymbolNameDeserializer { name: s })
+            SeqState::First => {
+                self.state = SeqState::Second;
+                seed.deserialize(IvarsDeserializer { de: &mut *self.de })
                     .map(Some)
             }
-            1 => {
-                self.state = 2;
-                let de = IvarsDeserializer {
-                    data: self.data,
-                    ivars: self.ivars,
-                };
-                seed.deserialize(de).map(Some)
+            SeqState::Second => {
+                self.state = SeqState::Done;
+                seed.deserialize(SymbolNameDeserializer { name: self.name })
+                    .map(Some)
             }
-            _ => Ok(None),
+            SeqState::Done => Ok(None),
         }
     }
 
     fn size_hint(&self) -> Option<usize> {
-        Some((2 - self.state as usize).min(2))
+        Some(self.state.remaining())
     }
 }
 
-pub(crate) struct UserDefinedSeqAccess<'a, 'b> {
-    data: &'b MarshalData<'a>,
-    class: SymbolIdx,
-    payload: &'a [u8],
-    state: u8,
+pub(crate) struct ClassedSeqAccess<'de, 'a> {
+    de: &'a mut Deserializer<'de>,
+    name: &'de str,
+    state: SeqState,
 }
 
-impl<'a, 'b> UserDefinedSeqAccess<'a, 'b> {
-    pub(crate) fn new(data: &'b MarshalData<'a>, class: SymbolIdx, payload: &'a [u8]) -> Self {
-        UserDefinedSeqAccess {
-            data,
-            class,
-            payload,
-            state: 0,
+impl<'de, 'a> ClassedSeqAccess<'de, 'a> {
+    pub(crate) fn new(de: &'a mut Deserializer<'de>, name: &'de str) -> Self {
+        ClassedSeqAccess {
+            de,
+            name,
+            state: SeqState::First,
         }
     }
+
+    pub(crate) fn finish(&mut self) -> Result<(), MarshalDeserializeError> {
+        match self.state {
+            SeqState::First => self.de.skip_value()?,
+            SeqState::Second | SeqState::Done => {}
+        }
+        self.state = SeqState::Done;
+        Ok(())
+    }
 }
 
-impl<'de, 'b> SeqAccess<'de> for UserDefinedSeqAccess<'de, 'b> {
-    type Error = super::MarshalDeserializeError;
+impl<'de> SeqAccess<'de> for ClassedSeqAccess<'de, '_> {
+    type Error = MarshalDeserializeError;
 
     fn next_element_seed<T: DeserializeSeed<'de>>(
         &mut self,
         seed: T,
-    ) -> Result<Option<T::Value>, super::MarshalDeserializeError> {
+    ) -> Result<Option<T::Value>, MarshalDeserializeError> {
         match self.state {
-            0 => {
-                self.state = 1;
-                let rb = self
-                    .data
-                    .symbol(self.class)
-                    .ok_or(ErrorKind::InvalidSymbolIndex(self.class.inner()))?;
-                let s = rb_str_to_str(rb)?;
-                seed.deserialize(SymbolNameDeserializer { name: s })
+            SeqState::First => {
+                self.state = SeqState::Second;
+                seed.deserialize(&mut *self.de).map(Some)
+            }
+            SeqState::Second => {
+                self.state = SeqState::Done;
+                seed.deserialize(SymbolNameDeserializer { name: self.name })
                     .map(Some)
             }
-            1 => {
-                self.state = 2;
+            SeqState::Done => Ok(None),
+        }
+    }
+
+    fn size_hint(&self) -> Option<usize> {
+        Some(self.state.remaining())
+    }
+}
+
+pub(crate) struct HashDefaultSeqAccess<'de, 'a> {
+    de: &'a mut Deserializer<'de>,
+    pairs: usize,
+    state: SeqState,
+}
+
+impl<'de, 'a> HashDefaultSeqAccess<'de, 'a> {
+    pub(crate) fn new(de: &'a mut Deserializer<'de>, pairs: usize) -> Self {
+        HashDefaultSeqAccess {
+            de,
+            pairs,
+            state: SeqState::First,
+        }
+    }
+
+    pub(crate) fn finish(&mut self) -> Result<(), MarshalDeserializeError> {
+        match self.state {
+            SeqState::First => {
+                self.de.skip_hash_pairs(self.pairs)?;
+                self.de.skip_value()?;
+            }
+            SeqState::Second => self.de.skip_value()?,
+            SeqState::Done => {}
+        }
+        self.state = SeqState::Done;
+        Ok(())
+    }
+}
+
+impl<'de> SeqAccess<'de> for HashDefaultSeqAccess<'de, '_> {
+    type Error = MarshalDeserializeError;
+
+    fn next_element_seed<T: DeserializeSeed<'de>>(
+        &mut self,
+        seed: T,
+    ) -> Result<Option<T::Value>, MarshalDeserializeError> {
+        match self.state {
+            SeqState::First => {
+                self.state = SeqState::Second;
+                seed.deserialize(HashPairsDeserializer {
+                    de: &mut *self.de,
+                    pairs: self.pairs,
+                })
+                .map(Some)
+            }
+            SeqState::Second => {
+                self.state = SeqState::Done;
+                seed.deserialize(&mut *self.de).map(Some)
+            }
+            SeqState::Done => Ok(None),
+        }
+    }
+
+    fn size_hint(&self) -> Option<usize> {
+        Some(self.state.remaining())
+    }
+}
+
+pub(crate) struct UserDefinedSeqAccess<'de> {
+    name: &'de str,
+    payload: &'de [u8],
+    state: SeqState,
+}
+
+impl<'de> UserDefinedSeqAccess<'de> {
+    pub(crate) fn new(name: &'de str, payload: &'de [u8]) -> Self {
+        UserDefinedSeqAccess {
+            name,
+            payload,
+            state: SeqState::First,
+        }
+    }
+}
+
+impl<'de> SeqAccess<'de> for UserDefinedSeqAccess<'de> {
+    type Error = MarshalDeserializeError;
+
+    fn next_element_seed<T: DeserializeSeed<'de>>(
+        &mut self,
+        seed: T,
+    ) -> Result<Option<T::Value>, MarshalDeserializeError> {
+        match self.state {
+            SeqState::First => {
+                self.state = SeqState::Second;
                 seed.deserialize(serde_core::de::value::BorrowedBytesDeserializer::new(
                     self.payload,
                 ))
                 .map(Some)
             }
-            _ => Ok(None),
+            SeqState::Second => {
+                self.state = SeqState::Done;
+                seed.deserialize(SymbolNameDeserializer { name: self.name })
+                    .map(Some)
+            }
+            SeqState::Done => Ok(None),
         }
     }
 
     fn size_hint(&self) -> Option<usize> {
-        Some((2 - self.state as usize).min(2))
+        Some(self.state.remaining())
     }
 }
 
 pub(crate) struct RegexSeqAccess<'a> {
     pattern: &'a RbStr,
     flags: u8,
-    state: u8,
+    state: SeqState,
 }
 
 impl<'a> RegexSeqAccess<'a> {
@@ -272,144 +334,91 @@ impl<'a> RegexSeqAccess<'a> {
         RegexSeqAccess {
             pattern,
             flags,
-            state: 0,
+            state: SeqState::First,
         }
     }
 }
 
 impl<'de> SeqAccess<'de> for RegexSeqAccess<'de> {
-    type Error = super::MarshalDeserializeError;
+    type Error = MarshalDeserializeError;
 
     fn next_element_seed<T: DeserializeSeed<'de>>(
         &mut self,
         seed: T,
-    ) -> Result<Option<T::Value>, super::MarshalDeserializeError> {
+    ) -> Result<Option<T::Value>, MarshalDeserializeError> {
         match self.state {
-            0 => {
-                self.state = 1;
+            SeqState::First => {
+                self.state = SeqState::Second;
                 let s = rb_str_to_str(self.pattern)?;
                 seed.deserialize(serde_core::de::value::BorrowedStrDeserializer::new(s))
                     .map(Some)
             }
-            1 => {
-                self.state = 2;
+            SeqState::Second => {
+                self.state = SeqState::Done;
                 seed.deserialize(self.flags.into_deserializer()).map(Some)
             }
-            _ => Ok(None),
+            SeqState::Done => Ok(None),
         }
     }
 
     fn size_hint(&self) -> Option<usize> {
-        Some((2 - self.state as usize).min(2))
+        Some(self.state.remaining())
     }
 }
 
-/// Sequence access for HashDefault: yields `(hash_map, default_value)`.
-pub(crate) struct HashDefaultSeqAccess<'a, 'b> {
-    data: &'b MarshalData<'a>,
-    pairs: &'b [(ObjectIdx, ObjectIdx)],
-    default: ObjectIdx,
-    state: u8,
+pub(crate) struct HashPairsDeserializer<'de, 'a> {
+    de: &'a mut Deserializer<'de>,
+    pairs: usize,
 }
 
-impl<'a, 'b> HashDefaultSeqAccess<'a, 'b> {
-    pub(crate) fn new(
-        data: &'b MarshalData<'a>,
-        pairs: &'b [(ObjectIdx, ObjectIdx)],
-        default: ObjectIdx,
-    ) -> Self {
-        HashDefaultSeqAccess {
-            data,
-            pairs,
-            default,
-            state: 0,
-        }
-    }
-}
+impl<'de> serde_core::de::Deserializer<'de> for HashPairsDeserializer<'de, '_> {
+    type Error = MarshalDeserializeError;
 
-impl<'de, 'b> SeqAccess<'de> for HashDefaultSeqAccess<'de, 'b> {
-    type Error = super::MarshalDeserializeError;
-
-    fn next_element_seed<T: DeserializeSeed<'de>>(
-        &mut self,
-        seed: T,
-    ) -> Result<Option<T::Value>, super::MarshalDeserializeError> {
-        match self.state {
-            0 => {
-                self.state = 1;
-                let de = HashPairsDeserializer {
-                    data: self.data,
-                    pairs: self.pairs,
-                };
-                seed.deserialize(de).map(Some)
-            }
-            1 => {
-                self.state = 2;
-                let de = Deserializer {
-                    data: self.data,
-                    idx: self.default,
-                };
-                seed.deserialize(de).map(Some)
-            }
-            _ => Ok(None),
-        }
-    }
-
-    fn size_hint(&self) -> Option<usize> {
-        Some((2 - self.state as usize).min(2))
-    }
-}
-
-pub(crate) struct HashPairsDeserializer<'a, 'b> {
-    data: &'b MarshalData<'a>,
-    pairs: &'b [(ObjectIdx, ObjectIdx)],
-}
-
-impl<'de, 'b> serde_core::de::Deserializer<'de> for HashPairsDeserializer<'de, 'b> {
-    type Error = super::MarshalDeserializeError;
-
-    fn deserialize_any<V: serde_core::de::Visitor<'de>>(
+    fn deserialize_any<V: Visitor<'de>>(
         self,
         visitor: V,
-    ) -> Result<V::Value, super::MarshalDeserializeError> {
-        visitor.visit_map(super::map::MapDeserializer::new(self.data, self.pairs))
+    ) -> Result<V::Value, MarshalDeserializeError> {
+        self.de.drive_hash(self.pairs, visitor)
     }
 
-    fn deserialize_map<V: serde_core::de::Visitor<'de>>(
+    fn deserialize_map<V: Visitor<'de>>(
         self,
         visitor: V,
-    ) -> Result<V::Value, super::MarshalDeserializeError> {
+    ) -> Result<V::Value, MarshalDeserializeError> {
         self.deserialize_any(visitor)
     }
 
-    fn deserialize_struct<V: serde_core::de::Visitor<'de>>(
+    fn deserialize_struct<V: Visitor<'de>>(
         self,
         _name: &'static str,
         _fields: &'static [&'static str],
         visitor: V,
-    ) -> Result<V::Value, super::MarshalDeserializeError> {
+    ) -> Result<V::Value, MarshalDeserializeError> {
         self.deserialize_any(visitor)
     }
 
-    fn deserialize_ignored_any<V: serde_core::de::Visitor<'de>>(
+    fn deserialize_ignored_any<V: Visitor<'de>>(
         self,
         visitor: V,
-    ) -> Result<V::Value, super::MarshalDeserializeError> {
+    ) -> Result<V::Value, MarshalDeserializeError> {
+        self.de.skip_hash_pairs(self.pairs)?;
         visitor.visit_unit()
     }
 
-    fn deserialize_unit<V: serde_core::de::Visitor<'de>>(
+    fn deserialize_unit<V: Visitor<'de>>(
         self,
         visitor: V,
-    ) -> Result<V::Value, super::MarshalDeserializeError> {
+    ) -> Result<V::Value, MarshalDeserializeError> {
+        self.de.skip_hash_pairs(self.pairs)?;
         visitor.visit_unit()
     }
 
-    fn deserialize_unit_struct<V: serde_core::de::Visitor<'de>>(
+    fn deserialize_unit_struct<V: Visitor<'de>>(
         self,
         _name: &'static str,
         visitor: V,
-    ) -> Result<V::Value, super::MarshalDeserializeError> {
+    ) -> Result<V::Value, MarshalDeserializeError> {
+        self.de.skip_hash_pairs(self.pairs)?;
         visitor.visit_unit()
     }
 

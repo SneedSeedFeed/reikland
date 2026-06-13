@@ -1,15 +1,16 @@
 pub mod bignum;
+#[cfg(feature = "encoding")]
 pub mod encoding;
 pub mod fixnum;
 pub mod float;
 pub mod regex;
 pub mod string;
 pub mod type_byte;
-pub mod value;
+
+#[cfg(feature = "encoding")]
+pub use encoding::RubyEncoding;
 
 pub use {
-    encoding::RubyEncoding,
     regex::RbRegexStr,
-    string::RbString,
-    value::MarshalValue,
+    string::{RbStr, RbString},
 };
