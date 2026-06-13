@@ -59,12 +59,11 @@ pub use deserializer::{
     Deserializer, DeserializerConfig, MarshalDeserializeError, from_bytes, from_bytes_with_config,
 };
 pub use deserializer_types::{
-    Encoding, Ignored, Ivar, MixedKey, MixedKeyRef, RbHashDefault, RbObject, RbRegex, RbStruct,
-    Transparent, TransparentOpt, WithEncoding,
+    Ignored, Ivar, MixedKey, MixedKeyRef, RbHashDefault, RbObject, RbRegex, RbStruct, Transparent,
+    TransparentOpt,
     dual_key_map::{DualKeyMap, DualKeyVec},
 };
 pub use types::{
-    encoding::RubyEncoding,
     regex::RbRegexStr,
     string::{RbStr, RbString},
 };

@@ -12,9 +12,12 @@ pub mod transparent;
 pub use {
     hash_default::RbHashDefault,
     ignored::Ignored,
-    ivar::{Encoding, Ivar, WithEncoding},
+    ivar::Ivar,
     mixed_key::{MixedKey, MixedKeyRef},
     rb_object::{RbObject, RbStruct},
     regex::RbRegex,
     transparent::{Transparent, TransparentOpt},
 };
+
+#[cfg(feature = "encoding")]
+pub use ivar::{Encoding, WithEncoding};

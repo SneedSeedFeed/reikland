@@ -3,10 +3,13 @@
 use std::collections::HashMap;
 
 use reikland::{
-    Encoding, Ignored, Ivar, RbHashDefault, RbObject, RbRegex, RbString, RbStruct, Transparent,
-    TransparentOpt, WithEncoding, deserializer,
-    deserializer_types::dual_key_map::{
-        DualKeyMap, DualKeyMapInt, DualKeyVec, DualKeyVecSparse, DualKeyVecSparseHoley,
+    Ignored, Ivar, RbHashDefault, RbObject, RbRegex, RbString, RbStruct, Transparent,
+    TransparentOpt, deserializer,
+    deserializer_types::{
+        Encoding, WithEncoding,
+        dual_key_map::{
+            DualKeyMap, DualKeyMapInt, DualKeyVec, DualKeyVecSparse, DualKeyVecSparseHoley,
+        },
     },
     types::encoding::RubyEncoding,
 };
