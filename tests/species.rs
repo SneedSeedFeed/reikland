@@ -1,11 +1,11 @@
 // DISCLAIMER: THIS TEST IS 80% AI GENERATED
 
 use itertools::Itertools;
+use reikland::{
+    RbObject, deserializer,
+    deserializer_types::dual_key_map::{DualKeyMap, DualKeyVec},
+};
 use serde::Deserialize;
-
-use reikland::RbObject;
-use reikland::deserializer;
-use reikland::deserializer_types::dual_key_map::DualKeyVec;
 
 const SPECIES_DATA: &[u8] = include_bytes!("../test_data/species.dat");
 
@@ -53,16 +53,15 @@ struct BaseStats {
     spe: u16,
 }
 
-fn parse_species<'a>(data: &'a reikland::marshal::MarshalData<'a>) -> Vec<RbObject<Species<'a>>> {
+fn parse_species(data: &[u8]) -> Vec<RbObject<Species<'_>>> {
     let db: DualKeyVec<RbObject<Species>> =
-        deserializer::from_marshal_data(data).expect("failed to deserialize species");
+        deserializer::from_bytes(data).expect("failed to deserialize species");
     db.0
 }
 
 #[test]
 fn parse_species_dat() {
-    let data = reikland::marshal::parse(SPECIES_DATA).expect("failed to parse species.dat");
-    let species = parse_species(&data);
+    let species = parse_species(SPECIES_DATA);
 
     assert!(
         species.len() > 400,
@@ -86,8 +85,7 @@ fn parse_species_dat() {
 
 #[test]
 fn species_ids_are_strictly_increasing() {
-    let data = reikland::marshal::parse(SPECIES_DATA).expect("failed to parse species.dat");
-    let species = parse_species(&data);
+    let species = parse_species(SPECIES_DATA);
 
     for window in species.windows(2) {
         assert!(
@@ -103,10 +101,28 @@ fn species_ids_are_strictly_increasing() {
 
 #[test]
 fn all_species_are_unique() {
-    let data = reikland::marshal::parse(SPECIES_DATA).expect("failed to parse species.dat");
-    let species = parse_species(&data);
+    let species = parse_species(SPECIES_DATA);
 
     let unique = species.clone().into_iter().unique().collect::<Vec<_>>();
 
     assert_eq!(species.len(), unique.len())
+}
+
+/// The symbol-keyed entries are object references back to the integer-keyed objects, so
+/// deserializing the string-keyed side replays every species through the reference resolver.
+/// Both sides must come out identical.
+#[test]
+fn symbol_keyed_refs_resolve_to_same_species() {
+    let by_id = parse_species(SPECIES_DATA);
+    let by_name: DualKeyMap<&str, RbObject<Species>> =
+        deserializer::from_bytes(SPECIES_DATA).expect("failed to deserialize species by name");
+
+    assert_eq!(by_id.len(), by_name.0.len());
+    for species in &by_id {
+        let named = by_name
+            .0
+            .get(species.id)
+            .unwrap_or_else(|| panic!("species {} missing from symbol keys", species.id));
+        assert_eq!(named, species);
+    }
 }

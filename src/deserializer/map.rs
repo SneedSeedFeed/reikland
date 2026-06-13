@@ -1,121 +1,122 @@
 use serde_core::de::{DeserializeSeed, MapAccess, Visitor};
 
-use super::{Deserializer, ErrorKind, MarshalDeserializeError, rb_str_to_str};
-use crate::{
-    cursor::{object_table::ObjectIdx, symbol_table::SymbolIdx},
-    marshal::MarshalData,
-};
-pub(crate) struct MapDeserializer<'a, 'b> {
-    data: &'b MarshalData<'a>,
-    iter: std::slice::Iter<'b, (ObjectIdx, ObjectIdx)>,
-    value_idx: Option<ObjectIdx>,
+use super::{Deserializer, MarshalDeserializeError, rb_str_to_str};
+
+pub(crate) struct HashMapAccess<'de, 'a> {
+    de: &'a mut Deserializer<'de>,
+    remaining: usize,
+    value_pending: bool,
 }
 
-impl<'a, 'b> MapDeserializer<'a, 'b> {
-    pub(crate) fn new(data: &'b MarshalData<'a>, pairs: &'b [(ObjectIdx, ObjectIdx)]) -> Self {
-        MapDeserializer {
-            data,
-            iter: pairs.iter(),
-            value_idx: None,
+impl<'de, 'a> HashMapAccess<'de, 'a> {
+    pub(crate) fn new(de: &'a mut Deserializer<'de>, pairs: usize) -> Self {
+        HashMapAccess {
+            de,
+            remaining: pairs,
+            value_pending: false,
         }
+    }
+
+    /// Parse past whatever the visitor didn't consume.
+    pub(crate) fn finish(&mut self) -> Result<(), MarshalDeserializeError> {
+        if std::mem::take(&mut self.value_pending) {
+            self.de.skip_value()?;
+        }
+        let remaining = std::mem::take(&mut self.remaining);
+        self.de.skip_hash_pairs(remaining)
     }
 }
 
-impl<'de, 'b> MapAccess<'de> for MapDeserializer<'de, 'b> {
+impl<'de> MapAccess<'de> for HashMapAccess<'de, '_> {
     type Error = MarshalDeserializeError;
 
     fn next_key_seed<K: DeserializeSeed<'de>>(
         &mut self,
         seed: K,
     ) -> Result<Option<K::Value>, MarshalDeserializeError> {
-        match self.iter.next() {
-            Some(&(key_idx, val_idx)) => {
-                self.value_idx = Some(val_idx);
-                let de = Deserializer {
-                    data: self.data,
-                    idx: key_idx,
-                };
-                seed.deserialize(de).map(Some)
-            }
-            None => Ok(None),
+        if self.remaining == 0 {
+            return Ok(None);
         }
+        self.remaining -= 1;
+        self.value_pending = true;
+        seed.deserialize(&mut *self.de).map(Some)
     }
 
     fn next_value_seed<V: DeserializeSeed<'de>>(
         &mut self,
         seed: V,
     ) -> Result<V::Value, MarshalDeserializeError> {
-        let idx = self
-            .value_idx
-            .take()
-            .expect("next_value_seed called before next_key_seed");
-        let de = Deserializer {
-            data: self.data,
-            idx,
-        };
-        seed.deserialize(de)
+        debug_assert!(
+            self.value_pending,
+            "next_value_seed called before next_key_seed"
+        );
+        self.value_pending = false;
+        seed.deserialize(&mut *self.de)
     }
 
     fn size_hint(&self) -> Option<usize> {
-        Some(self.iter.len())
+        Some(self.remaining)
     }
 }
 
-pub(crate) struct IvarMapDeserializer<'a, 'b> {
-    data: &'b MarshalData<'a>,
-    iter: std::slice::Iter<'b, (SymbolIdx, ObjectIdx)>,
-    value_idx: Option<ObjectIdx>,
+pub(crate) struct IvarMapAccess<'de, 'a> {
+    de: &'a mut Deserializer<'de>,
+    remaining: usize,
+    value_pending: bool,
 }
 
-impl<'a, 'b> IvarMapDeserializer<'a, 'b> {
-    pub(crate) fn new(data: &'b MarshalData<'a>, ivars: &'b [(SymbolIdx, ObjectIdx)]) -> Self {
-        IvarMapDeserializer {
-            data,
-            iter: ivars.iter(),
-            value_idx: None,
+impl<'de, 'a> IvarMapAccess<'de, 'a> {
+    pub(crate) fn new(de: &'a mut Deserializer<'de>, pairs: usize) -> Self {
+        IvarMapAccess {
+            de,
+            remaining: pairs,
+            value_pending: false,
         }
     }
+
+    pub(crate) fn finish(&mut self) -> Result<(), MarshalDeserializeError> {
+        if std::mem::take(&mut self.value_pending) {
+            self.de.skip_value()?;
+        }
+        for _ in 0..std::mem::take(&mut self.remaining) {
+            self.de.parse_symbol()?;
+            self.de.skip_value()?;
+        }
+        Ok(())
+    }
 }
 
-impl<'de, 'b> MapAccess<'de> for IvarMapDeserializer<'de, 'b> {
+impl<'de> MapAccess<'de> for IvarMapAccess<'de, '_> {
     type Error = MarshalDeserializeError;
 
     fn next_key_seed<K: DeserializeSeed<'de>>(
         &mut self,
         seed: K,
     ) -> Result<Option<K::Value>, MarshalDeserializeError> {
-        match self.iter.next() {
-            Some(&(sym_idx, val_idx)) => {
-                self.value_idx = Some(val_idx);
-                let rb = self
-                    .data
-                    .symbol(sym_idx)
-                    .ok_or(ErrorKind::InvalidSymbolIndex(sym_idx.inner()))?;
-                let s = rb_str_to_str(rb)?;
-                seed.deserialize(serde_core::de::value::BorrowedStrDeserializer::new(s))
-                    .map(Some)
-            }
-            None => Ok(None),
+        if self.remaining == 0 {
+            return Ok(None);
         }
+        self.remaining -= 1;
+        self.value_pending = true;
+        let s = rb_str_to_str(self.de.parse_symbol()?)?;
+        seed.deserialize(serde_core::de::value::BorrowedStrDeserializer::new(s))
+            .map(Some)
     }
 
     fn next_value_seed<V: DeserializeSeed<'de>>(
         &mut self,
         seed: V,
     ) -> Result<V::Value, MarshalDeserializeError> {
-        let idx = self
-            .value_idx
-            .take()
-            .expect("next_value_seed called before next_key_seed");
-        let de = Deserializer {
-            data: self.data,
-            idx,
-        };
-        seed.deserialize(de)
+        debug_assert!(
+            self.value_pending,
+            "next_value_seed called before next_key_seed"
+        );
+        self.value_pending = false;
+        seed.deserialize(&mut *self.de)
     }
 
     fn size_hint(&self) -> Option<usize> {
-        Some(self.iter.len())
+        Some(self.remaining)
     }
 }
 
@@ -175,19 +176,18 @@ impl<'de> serde_core::de::Deserializer<'de> for SymbolNameDeserializer<'de> {
     }
 }
 
-pub(crate) struct IvarsDeserializer<'a, 'b> {
-    pub(crate) data: &'b MarshalData<'a>,
-    pub(crate) ivars: &'b [(SymbolIdx, ObjectIdx)],
+pub(crate) struct IvarsDeserializer<'de, 'a> {
+    pub(crate) de: &'a mut Deserializer<'de>,
 }
 
-impl<'de, 'b> serde_core::de::Deserializer<'de> for IvarsDeserializer<'de, 'b> {
+impl<'de> serde_core::de::Deserializer<'de> for IvarsDeserializer<'de, '_> {
     type Error = MarshalDeserializeError;
 
     fn deserialize_any<V: Visitor<'de>>(
         self,
         visitor: V,
     ) -> Result<V::Value, MarshalDeserializeError> {
-        visitor.visit_map(IvarMapDeserializer::new(self.data, self.ivars))
+        self.de.drive_ivar_map(visitor)
     }
 
     fn deserialize_map<V: Visitor<'de>>(
@@ -210,6 +210,7 @@ impl<'de, 'b> serde_core::de::Deserializer<'de> for IvarsDeserializer<'de, 'b> {
         self,
         visitor: V,
     ) -> Result<V::Value, MarshalDeserializeError> {
+        self.de.skip_ivars()?;
         visitor.visit_unit()
     }
 
@@ -217,6 +218,7 @@ impl<'de, 'b> serde_core::de::Deserializer<'de> for IvarsDeserializer<'de, 'b> {
         self,
         visitor: V,
     ) -> Result<V::Value, MarshalDeserializeError> {
+        self.de.skip_ivars()?;
         visitor.visit_unit()
     }
 
@@ -225,6 +227,7 @@ impl<'de, 'b> serde_core::de::Deserializer<'de> for IvarsDeserializer<'de, 'b> {
         _name: &'static str,
         visitor: V,
     ) -> Result<V::Value, MarshalDeserializeError> {
+        self.de.skip_ivars()?;
         visitor.visit_unit()
     }
 

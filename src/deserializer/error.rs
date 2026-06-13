@@ -3,7 +3,15 @@ use std::str::Utf8Error;
 use num_bigint::BigInt;
 
 use super::MAX_REF_DEPTH;
-use crate::{marshal::ParseError, types::value::MarshalValue};
+use crate::{
+    types::{
+        bignum::ParseBigIntError,
+        float::ParseRbFloatError,
+        string::ParseRbStrError,
+        type_byte::{InvalidTypeByte, MarshalTypeByte},
+    },
+    version_number::VersionNumber,
+};
 
 #[derive(Debug, thiserror::Error)]
 #[error("{kind}")]
@@ -16,14 +24,28 @@ pub struct MarshalDeserializeError {
 pub(crate) enum ErrorKind {
     #[error("{0}")]
     Message(Box<str>),
-    #[error(transparent)]
-    Parse(#[from] ParseError),
+    #[error("We do not support version {0}")]
+    VersionNumber(VersionNumber),
+    #[error("unexpected end of input")]
+    UnexpectedEof,
+    #[error("invalid type byte: {0}")]
+    InvalidTypeByte(#[from] InvalidTypeByte),
+    #[error("failed to parse string: {0}")]
+    String(#[from] ParseRbStrError),
+    #[error("failed to parse float: {0}")]
+    Float(#[from] ParseRbFloatError),
+    #[error("failed to parse bignum: {0}")]
+    Bignum(#[from] ParseBigIntError),
+    #[error("failed to parse element count")]
+    InvalidLen(#[from] std::num::TryFromIntError),
+    #[error("expected symbol in this position but got {}", .0.type_name())]
+    ExpectedSymbol(MarshalTypeByte),
     #[error("invalid UTF-8: {0}")]
     InvalidUtf8(#[from] Utf8Error),
-    #[error("invalid symbol index {0}")]
-    InvalidSymbolIndex(usize),
+    #[error("invalid symbol link {0}")]
+    InvalidSymbolLink(i32),
     #[error("invalid object ref {0}")]
-    InvalidObjectRef(usize),
+    InvalidObjectRef(i32),
     #[error("expected {expected}, got {got}")]
     TypeMismatch {
         expected: &'static str,
@@ -43,18 +65,12 @@ pub(crate) enum ErrorKind {
     BignumTooLarge,
     #[error("expected single char, got string of len {len}")]
     ExpectedSingleChar { len: usize },
-    #[error("cannot deserialize {0} in self-describing mode")]
-    UnsupportedType(&'static str),
+    #[error("expected an enum as a single-entry hash, got a hash of {0} entries")]
+    EnumHashLen(usize),
     #[error(
         "cyclic or too-deep object reference chain (>{MAX_REF_DEPTH} hops) if you are hitting this one on data you know is good go open a github issue and cry at the maintainer plz"
     )]
     CyclicRef,
-}
-
-impl From<ParseError> for MarshalDeserializeError {
-    fn from(e: ParseError) -> Self {
-        ErrorKind::Parse(e).into()
-    }
 }
 
 impl serde_core::de::Error for MarshalDeserializeError {
@@ -63,14 +79,14 @@ impl serde_core::de::Error for MarshalDeserializeError {
     }
 }
 
-/// Shorthand for creating a [`ErrorKind::TypeMismatch`] error from a [`MarshalValue`].
+/// Shorthand for creating a [`ErrorKind::TypeMismatch`] error from a [`MarshalTypeByte`].
 pub(crate) fn type_mismatch(
     expected: &'static str,
-    got: &MarshalValue<'_>,
+    got: MarshalTypeByte,
 ) -> MarshalDeserializeError {
     ErrorKind::TypeMismatch {
         expected,
-        got: got.as_snake_case(),
+        got: got.type_name(),
     }
     .into()
 }

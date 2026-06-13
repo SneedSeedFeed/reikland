@@ -2,23 +2,20 @@
 
 use std::collections::HashMap;
 
+use reikland::{
+    Ignored, Ivar, RbHashDefault, RbObject, RbRegex, RbString, RbStruct, Transparent,
+    TransparentOpt, deserializer,
+    deserializer_types::{
+        Encoding, WithEncoding,
+        dual_key_map::{
+            DualKeyMap, DualKeyMapInt, DualKeyVec, DualKeyVecSparse, DualKeyVecSparseHoley,
+        },
+    },
+    types::encoding::RubyEncoding,
+};
 use serde::Deserialize;
 
-use reikland::deserializer;
-use reikland::deserializer_types::dual_key_map::{
-    DualKeyMap, DualKeyMapInt, DualKeyVec, DualKeyVecSparse, DualKeyVecSparseHoley,
-};
-use reikland::types::encoding::RubyEncoding;
-use reikland::{
-    Encoding, Ignored, Ivar, RbHashDefault, RbObject, RbRegex, RbString, RbStruct, Transparent,
-    TransparentOpt, WithEncoding,
-};
-
 const MARSHAL_DATA: &[u8] = include_bytes!("../test_data/wrapper_types.marshal");
-
-fn parse() -> reikland::marshal::MarshalData<'static> {
-    reikland::marshal::parse(MARSHAL_DATA).expect("failed to parse wrapper_types.marshal")
-}
 
 // ── Transparent ─────────────────────────────────────────────────────
 
@@ -29,8 +26,7 @@ fn transparent_passes_through_bare_int() {
         bare_int: Transparent<i32>,
     }
 
-    let data = parse();
-    let root: Root = deserializer::from_marshal_data(&data).unwrap();
+    let root: Root = deserializer::from_bytes(MARSHAL_DATA).unwrap();
     assert_eq!(*root.bare_int, 42);
 }
 
@@ -41,8 +37,7 @@ fn transparent_passes_through_bare_symbol() {
         bare_symbol: Transparent<String>,
     }
 
-    let data = parse();
-    let root: Root = deserializer::from_marshal_data(&data).unwrap();
+    let root: Root = deserializer::from_bytes(MARSHAL_DATA).unwrap();
     assert_eq!(*root.bare_symbol, "my_symbol");
 }
 
@@ -55,8 +50,7 @@ fn transparent_unwraps_ivar_string() {
         utf8_string: Transparent<String>,
     }
 
-    let data = parse();
-    let root: Root = deserializer::from_marshal_data(&data).unwrap();
+    let root: Root = deserializer::from_bytes(MARSHAL_DATA).unwrap();
     assert_eq!(*root.utf8_string, "hello world");
 }
 
@@ -69,8 +63,7 @@ fn transparent_opt_bare_value_gives_none() {
         bare_int: TransparentOpt<i32, ()>,
     }
 
-    let data = parse();
-    let root: Root = deserializer::from_marshal_data(&data).unwrap();
+    let root: Root = deserializer::from_bytes(MARSHAL_DATA).unwrap();
     assert_eq!(*root.bare_int, 42);
     assert!(root.bare_int.1.is_none());
 }
@@ -84,8 +77,7 @@ fn transparent_opt_ivar_captures_second_element() {
         utf8_string: TransparentOpt<String, Encoding>,
     }
 
-    let data = parse();
-    let root: Root = deserializer::from_marshal_data(&data).unwrap();
+    let root: Root = deserializer::from_bytes(MARSHAL_DATA).unwrap();
     assert_eq!(*root.utf8_string, "hello world");
     let enc = root
         .utf8_string
@@ -104,8 +96,7 @@ fn ivar_discards_ivars_with_unit() {
         utf8_string: Ivar<String>,
     }
 
-    let data = parse();
-    let root: Root = deserializer::from_marshal_data(&data).unwrap();
+    let root: Root = deserializer::from_bytes(MARSHAL_DATA).unwrap();
     assert_eq!(*root.utf8_string, "hello world");
 }
 
@@ -116,8 +107,7 @@ fn ivar_captures_ivars_as_hashmap() {
         utf8_string: Ivar<String, HashMap<String, bool>>,
     }
 
-    let data = parse();
-    let root: Root = deserializer::from_marshal_data(&data).unwrap();
+    let root: Root = deserializer::from_bytes(MARSHAL_DATA).unwrap();
     assert_eq!(*root.utf8_string, "hello world");
     // UTF-8 strings have E: true
     assert!(root.utf8_string.ivars["E"]);
@@ -132,8 +122,7 @@ fn with_encoding_utf8() {
         utf8_string: WithEncoding<String>,
     }
 
-    let data = parse();
-    let root: Root = deserializer::from_marshal_data(&data).unwrap();
+    let root: Root = deserializer::from_bytes(MARSHAL_DATA).unwrap();
     assert_eq!(*root.utf8_string, "hello world");
     assert_eq!(root.utf8_string.ivars.0, RubyEncoding::Utf8);
 }
@@ -145,8 +134,7 @@ fn with_encoding_ascii() {
         ascii_string: WithEncoding<String>,
     }
 
-    let data = parse();
-    let root: Root = deserializer::from_marshal_data(&data).unwrap();
+    let root: Root = deserializer::from_bytes(MARSHAL_DATA).unwrap();
     assert_eq!(*root.ascii_string, "hello");
     assert_eq!(root.ascii_string.ivars.0, RubyEncoding::UsAscii);
 }
@@ -161,8 +149,7 @@ fn with_encoding_shift_jis() {
         sjis_string: WithEncoding<RbString>,
     }
 
-    let data = parse();
-    let root: Root = deserializer::from_marshal_data(&data).unwrap();
+    let root: Root = deserializer::from_bytes(MARSHAL_DATA).unwrap();
     assert_eq!(root.sjis_string.ivars.0, RubyEncoding::ShiftJis);
     // "こんにちは" in Shift_JIS
     assert_eq!(
@@ -178,8 +165,7 @@ fn encoding_deref() {
         utf8_string: WithEncoding<String>,
     }
 
-    let data = parse();
-    let root: Root = deserializer::from_marshal_data(&data).unwrap();
+    let root: Root = deserializer::from_bytes(MARSHAL_DATA).unwrap();
     // Encoding derefs to RubyEncoding
     let enc: &RubyEncoding = &root.utf8_string.ivars;
     assert_eq!(*enc, RubyEncoding::Utf8);
@@ -203,8 +189,7 @@ fn rb_object_discards_class() {
         animal: RbObject<AnimalFields>,
     }
 
-    let data = parse();
-    let root: Root = deserializer::from_marshal_data(&data).unwrap();
+    let root: Root = deserializer::from_bytes(MARSHAL_DATA).unwrap();
     assert_eq!(*root.animal.name, "cat");
     assert_eq!(root.animal.legs, 4);
 }
@@ -216,8 +201,7 @@ fn rb_object_captures_class() {
         animal: RbObject<AnimalFields, String>,
     }
 
-    let data = parse();
-    let root: Root = deserializer::from_marshal_data(&data).unwrap();
+    let root: Root = deserializer::from_bytes(MARSHAL_DATA).unwrap();
     assert_eq!(root.animal.class, "Animal");
     assert_eq!(*root.animal.name, "cat");
     assert_eq!(root.animal.legs, 4);
@@ -230,8 +214,7 @@ fn rb_object_deref_to_fields() {
         animal: RbObject<AnimalFields>,
     }
 
-    let data = parse();
-    let root: Root = deserializer::from_marshal_data(&data).unwrap();
+    let root: Root = deserializer::from_bytes(MARSHAL_DATA).unwrap();
     // Deref gives direct access to fields
     let name: &str = &root.animal.name;
     assert_eq!(name, "cat");
@@ -252,8 +235,7 @@ fn rb_struct_discards_name() {
         pair: RbStruct<PairFields>,
     }
 
-    let data = parse();
-    let root: Root = deserializer::from_marshal_data(&data).unwrap();
+    let root: Root = deserializer::from_bytes(MARSHAL_DATA).unwrap();
     assert_eq!(root.pair.left, 100);
     assert_eq!(root.pair.right, 200);
 }
@@ -265,8 +247,7 @@ fn rb_struct_captures_name() {
         pair: RbStruct<PairFields, String>,
     }
 
-    let data = parse();
-    let root: Root = deserializer::from_marshal_data(&data).unwrap();
+    let root: Root = deserializer::from_bytes(MARSHAL_DATA).unwrap();
     assert_eq!(root.pair.class, "Pair");
     assert_eq!(root.pair.left, 100);
     assert_eq!(root.pair.right, 200);
@@ -283,8 +264,7 @@ fn rb_regex_plain() {
         regex_plain: Ivar<RbRegex>,
     }
 
-    let data = parse();
-    let root: Root = deserializer::from_marshal_data(&data).unwrap();
+    let root: Root = deserializer::from_bytes(MARSHAL_DATA).unwrap();
     assert_eq!(root.regex_plain.pattern, "hello");
     assert_eq!(root.regex_plain.flags, 0);
 }
@@ -296,8 +276,7 @@ fn rb_regex_with_flags() {
         regex_flags: Ivar<RbRegex>,
     }
 
-    let data = parse();
-    let root: Root = deserializer::from_marshal_data(&data).unwrap();
+    let root: Root = deserializer::from_bytes(MARSHAL_DATA).unwrap();
     assert_eq!(root.regex_flags.pattern, "world");
     // Ruby: IGNORECASE=1, EXTENDED=2, MULTILINE=4
     assert_eq!(root.regex_flags.flags, 1 | 2 | 4);
@@ -312,8 +291,7 @@ fn rb_regex_transparent_unwrap() {
         regex_plain: Transparent<RbRegex>,
     }
 
-    let data = parse();
-    let root: Root = deserializer::from_marshal_data(&data).unwrap();
+    let root: Root = deserializer::from_bytes(MARSHAL_DATA).unwrap();
     assert_eq!(root.regex_plain.pattern, "hello");
     assert_eq!(root.regex_plain.flags, 0);
 }
@@ -327,8 +305,7 @@ fn rb_hash_default_captures_default() {
         hash_default: RbHashDefault<HashMap<String, i32>, i32>,
     }
 
-    let data = parse();
-    let root: Root = deserializer::from_marshal_data(&data).unwrap();
+    let root: Root = deserializer::from_bytes(MARSHAL_DATA).unwrap();
     assert_eq!(root.hash_default.default, 99);
     assert_eq!(root.hash_default.hash["x"], 10);
     assert_eq!(root.hash_default.hash["y"], 20);
@@ -346,8 +323,7 @@ fn rb_hash_default_discards_default() {
         hash_default: RbHashDefault<HashMap<String, i32>>,
     }
 
-    let data = parse();
-    let root: Root = deserializer::from_marshal_data(&data).unwrap();
+    let root: Root = deserializer::from_bytes(MARSHAL_DATA).unwrap();
     assert_eq!(root.hash_default.default, Ignored);
     assert_eq!(root.hash_default.hash["x"], 10);
     assert_eq!(root.hash_default.hash["y"], 20);
@@ -361,8 +337,7 @@ fn rb_hash_default_deref_to_hash() {
         hash_default: RbHashDefault<HashMap<String, i32>, i32>,
     }
 
-    let data = parse();
-    let root: Root = deserializer::from_marshal_data(&data).unwrap();
+    let root: Root = deserializer::from_bytes(MARSHAL_DATA).unwrap();
     // Deref goes straight to the HashMap
     assert_eq!(root.hash_default.len(), 3);
     assert!(root.hash_default.contains_key("z"));
@@ -377,8 +352,7 @@ fn dual_key_map_keeps_string_keys() {
         mixed_hash: DualKeyMap<String, Transparent<String>>,
     }
 
-    let data = parse();
-    let root: Root = deserializer::from_marshal_data(&data).unwrap();
+    let root: Root = deserializer::from_bytes(MARSHAL_DATA).unwrap();
     assert_eq!(root.mixed_hash.0.len(), 3);
     assert_eq!(*root.mixed_hash.0["alpha"], "a");
     assert_eq!(*root.mixed_hash.0["beta"], "b");
@@ -394,8 +368,7 @@ fn dual_key_map_int_keeps_int_keys() {
         int_keyed_hash: DualKeyMapInt<i32, Transparent<String>>,
     }
 
-    let data = parse();
-    let root: Root = deserializer::from_marshal_data(&data).unwrap();
+    let root: Root = deserializer::from_bytes(MARSHAL_DATA).unwrap();
     assert_eq!(root.int_keyed_hash.0.len(), 3);
     assert_eq!(*root.int_keyed_hash.0[&10], "ten");
     assert_eq!(*root.int_keyed_hash.0[&20], "twenty");
@@ -411,8 +384,7 @@ fn dual_key_vec_collects_in_order() {
         mixed_hash: DualKeyVec<Transparent<String>>,
     }
 
-    let data = parse();
-    let root: Root = deserializer::from_marshal_data(&data).unwrap();
+    let root: Root = deserializer::from_bytes(MARSHAL_DATA).unwrap();
     assert_eq!(root.mixed_hash.0.len(), 3);
     assert_eq!(*root.mixed_hash.0[0], "zero");
     assert_eq!(*root.mixed_hash.0[1], "one");
@@ -428,8 +400,7 @@ fn dual_key_vec_sparse_indexes_by_key() {
         mixed_hash: DualKeyVecSparse<Transparent<String>>,
     }
 
-    let data = parse();
-    let root: Root = deserializer::from_marshal_data(&data).unwrap();
+    let root: Root = deserializer::from_bytes(MARSHAL_DATA).unwrap();
     // Keys are 0, 1, 2 -- contiguous, so this should work
     assert_eq!(root.mixed_hash.0.len(), 3);
     assert_eq!(*root.mixed_hash.0[0], "zero");
@@ -446,8 +417,7 @@ fn dual_key_vec_sparse_holey_allows_gaps() {
         sparse_hash: DualKeyVecSparseHoley<Transparent<String>>,
     }
 
-    let data = parse();
-    let root: Root = deserializer::from_marshal_data(&data).unwrap();
+    let root: Root = deserializer::from_bytes(MARSHAL_DATA).unwrap();
     let v = &root.sparse_hash.0;
     // Keys are 0, 5, 2 -- so vec length is 6 (indices 0..=5)
     assert_eq!(v.len(), 6);
@@ -466,8 +436,7 @@ fn dual_key_vec_sparse_holey_iter_filled() {
         sparse_hash: DualKeyVecSparseHoley<Transparent<String>>,
     }
 
-    let data = parse();
-    let root: Root = deserializer::from_marshal_data(&data).unwrap();
+    let root: Root = deserializer::from_bytes(MARSHAL_DATA).unwrap();
     let filled: Vec<&str> = root
         .sparse_hash
         .iter_filled()
@@ -486,8 +455,7 @@ fn dual_key_vec_sparse_rejects_holes() {
         sparse_hash: DualKeyVecSparse<Transparent<String>>,
     }
 
-    let data = parse();
-    let result: Result<Root, _> = deserializer::from_marshal_data(&data);
+    let result: Result<Root, _> = deserializer::from_bytes(MARSHAL_DATA);
     assert!(
         result.is_err(),
         "DualKeyVecSparse should reject sparse data with holes"
@@ -506,8 +474,7 @@ fn ivar_rb_regex_with_encoding() {
         regex_plain: WithEncoding<RbRegex>,
     }
 
-    let data = parse();
-    let root: Root = deserializer::from_marshal_data(&data).unwrap();
+    let root: Root = deserializer::from_bytes(MARSHAL_DATA).unwrap();
     assert_eq!(root.regex_plain.inner.pattern, "hello");
     assert_eq!(root.regex_plain.inner.flags, 0);
     assert_eq!(root.regex_plain.ivars.0, RubyEncoding::UsAscii);
@@ -521,8 +488,7 @@ fn transparent_opt_regex_captures_encoding() {
         regex_flags: TransparentOpt<RbRegex, Encoding>,
     }
 
-    let data = parse();
-    let root: Root = deserializer::from_marshal_data(&data).unwrap();
+    let root: Root = deserializer::from_bytes(MARSHAL_DATA).unwrap();
     assert_eq!(root.regex_flags.pattern, "world");
     assert_eq!(root.regex_flags.flags, 7);
     let enc = root.regex_flags.1.as_ref().expect("should have encoding");
@@ -538,8 +504,7 @@ fn rb_object_with_transparent_fields() {
         animal: RbObject<AnimalFields, String>,
     }
 
-    let data = parse();
-    let root: Root = deserializer::from_marshal_data(&data).unwrap();
+    let root: Root = deserializer::from_bytes(MARSHAL_DATA).unwrap();
     assert_eq!(root.animal.class, "Animal");
     assert_eq!(*root.animal.name, "cat");
     assert_eq!(root.animal.legs, 4);

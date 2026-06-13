@@ -1,350 +1,229 @@
 // Disclaimer: These tests are AI generated
-use num_bigint::BigInt;
-use reikland::{
-    cursor::object_table::ObjectIdx,
-    marshal::{self, MarshalData},
-    types::value::MarshalValue,
-};
+//
+// test_data/all_types.marshal is a single root array of 61 values covering every marshal type.
+// v0.1 walked the parse tree directly; since 0.2 parses in a single phase there is no tree, so
+// the root is deserialized as one big tuple struct with the exact expected type in each slot.
+use std::collections::HashMap;
+
+use reikland::{Ignored, Ivar, RbObject, RbRegex, RbStruct, Transparent, from_bytes};
+use serde::{Deserialize, de::IgnoredAny};
 
 const MARSHAL_DATA: &[u8] = include_bytes!("../test_data/all_types.marshal");
 
-/// Get element `i` from the root array.
-fn obj<'a>(data: &'a MarshalData<'a>, elements: &[ObjectIdx], i: usize) -> &'a MarshalValue<'a> {
-    data.object(elements[i])
-}
+/// Counts the entries of a map while discarding the contents, for slots where only the pair
+/// count is known.
+#[derive(Debug, PartialEq)]
+struct CountMap(usize);
 
-/// Unwrap an Instance wrapper, returning the inner value. Panics if not an Instance.
-fn unwrap_instance<'a>(
-    data: &'a MarshalData<'a>,
-    elements: &[ObjectIdx],
-    i: usize,
-) -> (
-    &'a MarshalValue<'a>,
-    &'a [(reikland::cursor::symbol_table::SymbolIdx, ObjectIdx)],
-) {
-    match obj(data, elements, i) {
-        MarshalValue::Instance { inner, ivars } => (data.object(*inner), ivars.as_slice()),
-        other => panic!("expected Instance at index {i}, got {other:?}"),
-    }
-}
+impl<'de> Deserialize<'de> for CountMap {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct CountMapVisitor;
 
-fn assert_fixnum(data: &MarshalData, elements: &[ObjectIdx], i: usize, expected: i32) {
-    match obj(data, elements, i) {
-        MarshalValue::Fixnum(v) => assert_eq!(*v, expected, "fixnum at index {i}"),
-        other => panic!("expected Fixnum({expected}) at index {i}, got {other:?}"),
-    }
-}
+        impl<'de> serde::de::Visitor<'de> for CountMapVisitor {
+            type Value = CountMap;
 
-fn assert_float(data: &MarshalData, elements: &[ObjectIdx], i: usize, expected: f64) {
-    match obj(data, elements, i) {
-        MarshalValue::Float(v) => {
-            if expected.is_nan() {
-                assert!(v.is_nan(), "expected NaN at index {i}, got {v}");
-            } else {
-                assert_eq!(
-                    v.to_bits(),
-                    expected.to_bits(),
-                    "float at index {i}: got {v}, expected {expected}"
-                );
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a map")
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<CountMap, A::Error> {
+                let mut count = 0;
+                while map.next_entry::<IgnoredAny, IgnoredAny>()?.is_some() {
+                    count += 1;
+                }
+                Ok(CountMap(count))
             }
         }
-        other => panic!("expected Float at index {i}, got {other:?}"),
+
+        deserializer.deserialize_map(CountMapVisitor)
     }
 }
 
-fn assert_string(data: &MarshalData, elements: &[ObjectIdx], i: usize, expected: &[u8]) {
-    let (inner, _ivars) = unwrap_instance(data, elements, i);
-    match inner {
-        MarshalValue::String(s) => {
-            assert_eq!(s.as_slice(), expected, "string at index {i}");
-        }
-        other => panic!("expected String inside Instance at index {i}, got {other:?}"),
-    }
-}
+#[derive(Deserialize)]
+struct AllTypes<'a>(
+    (),   // 0: nil
+    bool, // 1: true
+    bool, // 2: false
+    // -- Fixnum edge cases (3-23) --
+    i32, // 3: 0
+    i32, // 4: 1
+    i32, // 5: 122
+    i32, // 6: -1
+    i32, // 7: -123
+    i32, // 8: 123 (1-byte positive)
+    i32, // 9: 255
+    i32, // 10: -124 (1-byte negative)
+    i32, // 11: -256
+    i32, // 12: 256 (2-byte positive)
+    i32, // 13: 65535
+    i32, // 14: -257 (2-byte negative)
+    i32, // 15: -65536
+    i32, // 16: 65536 (3-byte positive)
+    i32, // 17: 16777215
+    i32, // 18: -65537 (3-byte negative)
+    i32, // 19: -16777216
+    i32, // 20: 16777216 (4-byte)
+    i32, // 21: 1073741823 (max fixnum)
+    i32, // 22: -16777217
+    i32, // 23: -1073741824 (min fixnum)
+    // -- Float edge cases (24-33) --
+    f64, // 24: 0.0
+    f64, // 25: -0.0
+    f64, // 26: 1.5
+    f64, // 27: -1.5
+    f64, // 28: inf
+    f64, // 29: -inf
+    f64, // 30: NaN
+    f64, // 31: f64::MAX
+    f64, // 32: f64::MIN_POSITIVE
+    f64, // 33: smallest subnormal
+    // -- Bignum edge cases (34-38) --
+    i64,     // 34: 2^30
+    i64,     // 35: -(2^30 + 1)
+    i128,    // 36: 2^64
+    i128,    // 37: -(2^64)
+    Ignored, // 38: 2^128, too big for any integer type
+    // -- Symbol and strings (39-43) --
+    &'a str,              // 39: :test_symbol
+    Transparent<&'a str>, // 40: "hello world" (Instance-wrapped)
+    Transparent<&'a str>, // 41: "" (Instance-wrapped)
+    &'a [u8],             // 42: binary string (ASCII-8BIT, not Instance-wrapped)
+    Transparent<&'a str>, // 43: emoji (Instance-wrapped)
+    // -- Regex (44-45, Instance-wrapped) --
+    Ivar<RbRegex<&'a str>>, // 44: /simple/
+    Ivar<RbRegex<&'a str>>, // 45: /with flags/imx
+    // -- Arrays (46-47) --
+    Vec<i32>,                                  // 46: []
+    (i32, Transparent<&'a str>, &'a str, f64), // 47: [1, "two", :three, 4.0]
+    // -- Hashes (48-50) --
+    HashMap<&'a str, i32>,                  // 48: {}
+    CountMap,                               // 49: hash with 3 pairs
+    reikland::RbHashDefault<CountMap, i32>, // 50: Hash.new(42) with 2 pairs
+    // -- Object / Struct / Extended (51-53) --
+    RbObject<CountMap, &'a str>, // 51: TestObject with 2 ivars
+    RbStruct<HashMap<&'a str, i32>, &'a str>, // 52: TestStruct(100, 200)
+    (RbObject<CountMap, &'a str>, &'a str), // 53: TestObject extended with TestModule
+    // -- Class / Module (54-55) --
+    &'a str, // 54: String
+    &'a str, // 55: Kernel
+    // -- User serialization (56-58) --
+    Ivar<(&'a [u8], &'a str)>, // 56: UserDefined (Instance-wrapped)
+    (Vec<i32>, &'a str),       // 57: UserMarshal of [10, 20, 30]
+    Ivar<(&'a str, &'a str)>,  // 58: UserString "subclassed string" (Instance-wrapped)
+    // -- Object references (59-60) --
+    Transparent<&'a str>, // 59: "shared" (Instance-wrapped)
+    Transparent<&'a str>, // 60: object reference back to 59
+);
 
 #[test]
-fn parse_all_types() {
-    let data = marshal::parse(MARSHAL_DATA).expect("failed to parse marshal data");
+fn deserialize_all_types() {
+    let all: AllTypes = from_bytes(MARSHAL_DATA).expect("failed to deserialize marshal data");
 
-    let MarshalValue::Array(elements) = data.root() else {
-        panic!("root is not an Array: {:?}", data.root());
-    };
-    assert_eq!(elements.len(), 61, "root array length");
+    // -- Nil, True, False --
+    assert!(all.1);
+    assert!(!all.2);
 
-    // -- Nil, True, False (indices 0-2) --
-    assert!(matches!(obj(&data, elements, 0), MarshalValue::Nil));
-    assert!(matches!(obj(&data, elements, 1), MarshalValue::True));
-    assert!(matches!(obj(&data, elements, 2), MarshalValue::False));
+    // -- Fixnum edge cases --
+    assert_eq!(all.3, 0);
+    assert_eq!(all.4, 1);
+    assert_eq!(all.5, 122);
+    assert_eq!(all.6, -1);
+    assert_eq!(all.7, -123);
+    assert_eq!(all.8, 123);
+    assert_eq!(all.9, 255);
+    assert_eq!(all.10, -124);
+    assert_eq!(all.11, -256);
+    assert_eq!(all.12, 256);
+    assert_eq!(all.13, 65535);
+    assert_eq!(all.14, -257);
+    assert_eq!(all.15, -65536);
+    assert_eq!(all.16, 65536);
+    assert_eq!(all.17, 16777215);
+    assert_eq!(all.18, -65537);
+    assert_eq!(all.19, -16777216);
+    assert_eq!(all.20, 16777216);
+    assert_eq!(all.21, 1073741823);
+    assert_eq!(all.22, -16777217);
+    assert_eq!(all.23, -1073741824);
 
-    // -- Fixnum edge cases (indices 3-23) --
-    // Zero
-    assert_fixnum(&data, elements, 3, 0);
-    // Single-byte positive (1..122)
-    assert_fixnum(&data, elements, 4, 1);
-    assert_fixnum(&data, elements, 5, 122);
-    // Single-byte negative (-123..-1)
-    assert_fixnum(&data, elements, 6, -1);
-    assert_fixnum(&data, elements, 7, -123);
-    // 1-byte positive (0x01 prefix)
-    assert_fixnum(&data, elements, 8, 123);
-    assert_fixnum(&data, elements, 9, 255);
-    // 1-byte negative (0xff prefix)
-    assert_fixnum(&data, elements, 10, -124);
-    assert_fixnum(&data, elements, 11, -256);
-    // 2-byte positive (0x02 prefix)
-    assert_fixnum(&data, elements, 12, 256);
-    assert_fixnum(&data, elements, 13, 65535);
-    // 2-byte negative (0xfe prefix)
-    assert_fixnum(&data, elements, 14, -257);
-    assert_fixnum(&data, elements, 15, -65536);
-    // 3-byte positive (0x03 prefix)
-    assert_fixnum(&data, elements, 16, 65536);
-    assert_fixnum(&data, elements, 17, 16777215);
-    // 3-byte negative (0xfd prefix)
-    assert_fixnum(&data, elements, 18, -65537);
-    assert_fixnum(&data, elements, 19, -16777216);
-    // 4-byte (0x04/0xfc prefix)
-    assert_fixnum(&data, elements, 20, 16777216);
-    assert_fixnum(&data, elements, 21, 1073741823); // max fixnum
-    assert_fixnum(&data, elements, 22, -16777217);
-    assert_fixnum(&data, elements, 23, -1073741824); // min fixnum
+    // -- Float edge cases (bit-exact where it matters) --
+    assert_eq!(all.24.to_bits(), 0.0f64.to_bits());
+    assert_eq!(all.25.to_bits(), (-0.0f64).to_bits());
+    assert_eq!(all.26, 1.5);
+    assert_eq!(all.27, -1.5);
+    assert_eq!(all.28, f64::INFINITY);
+    assert_eq!(all.29, f64::NEG_INFINITY);
+    assert!(all.30.is_nan());
+    assert_eq!(all.31, f64::MAX);
+    assert_eq!(all.32, 2.2250738585072014e-308); // f64::MIN_POSITIVE
+    assert_eq!(all.33, 5.0e-324); // smallest subnormal
 
-    // -- Float edge cases (indices 24-33) --
-    assert_float(&data, elements, 24, 0.0);
-    assert_float(&data, elements, 25, -0.0);
-    assert_float(&data, elements, 26, 1.5);
-    assert_float(&data, elements, 27, -1.5);
-    assert_float(&data, elements, 28, f64::INFINITY);
-    assert_float(&data, elements, 29, f64::NEG_INFINITY);
-    assert_float(&data, elements, 30, f64::NAN);
-    assert_float(&data, elements, 31, f64::MAX);
-    assert_float(&data, elements, 32, 2.2250738585072014e-308); // f64::MIN_POSITIVE
-    assert_float(&data, elements, 33, 5.0e-324); // smallest subnormal
+    // -- Bignum edge cases --
+    assert_eq!(all.34, 1 << 30);
+    assert_eq!(all.35, -(1i64 << 30) - 1);
+    assert_eq!(all.36, 1 << 64);
+    assert_eq!(all.37, -(1i128 << 64));
 
-    // -- Bignum edge cases (indices 34-38) --
-    let assert_bignum = |i: usize, expected: &str| match obj(&data, elements, i) {
-        MarshalValue::Bignum(v) => {
-            let expected: BigInt = expected.parse().unwrap();
-            assert_eq!(*v, expected, "bignum at index {i}");
-        }
-        other => panic!("expected Bignum at index {i}, got {other:?}"),
-    };
-    assert_bignum(34, "1073741824"); // 2^30
-    assert_bignum(35, "-1073741825"); // -(2^30 + 1)
-    assert_bignum(36, "18446744073709551616"); // 2^64
-    assert_bignum(37, "-18446744073709551616"); // -(2^64)
-    assert_bignum(38, "340282366920938463463374607431768211456"); // 2^128
+    // -- Symbol and strings --
+    assert_eq!(all.39, "test_symbol");
+    assert_eq!(*all.40, "hello world");
+    assert_eq!(*all.41, "");
+    assert_eq!(all.42, b"binary\x00data");
+    assert_eq!(*all.43, "\u{1F600}");
 
-    // -- Symbol (index 39) --
-    match obj(&data, elements, 39) {
-        MarshalValue::Symbol(s) => {
-            assert_eq!(s.as_slice(), b"test_symbol", "symbol at index 39");
-        }
-        other => panic!("expected Symbol at index 39, got {other:?}"),
-    }
+    // -- Regex --
+    assert_eq!(all.44.pattern, "simple");
+    assert_eq!(all.44.flags, 0);
+    assert_eq!(all.45.pattern, "with flags");
+    // Ruby regex flags: IGNORECASE=1, EXTENDED=2, MULTILINE=4
+    assert_eq!(all.45.flags, 1 | 2 | 4);
 
-    // -- Strings (indices 40-43, Instance-wrapped) --
-    assert_string(&data, elements, 40, b"hello world");
-    assert_string(&data, elements, 41, b"");
-    // Binary string (ASCII-8BIT) is not Instance-wrapped
-    match obj(&data, elements, 42) {
-        MarshalValue::String(s) => assert_eq!(s.as_slice(), b"binary\x00data"),
-        other => panic!("expected String at index 42, got {other:?}"),
-    }
-    assert_string(&data, elements, 43, "\u{1F600}".as_bytes());
+    // -- Arrays --
+    assert!(all.46.is_empty());
+    let (one, two, three, four) = all.47;
+    assert_eq!(one, 1);
+    assert_eq!(*two, "two");
+    assert_eq!(three, "three");
+    assert_eq!(four, 4.0);
 
-    // -- Regex (indices 44-45, Instance-wrapped) --
-    {
-        let (inner, _) = unwrap_instance(&data, elements, 44);
-        match inner {
-            MarshalValue::Regex { pattern, flags } => {
-                assert_eq!(pattern.as_slice(), b"simple");
-                assert_eq!(*flags, 0, "no flags");
-            }
-            other => panic!("expected Regex at index 44, got {other:?}"),
-        }
+    // -- Hashes --
+    assert!(all.48.is_empty());
+    assert_eq!(all.49, CountMap(3));
+    assert_eq!(all.50.hash, CountMap(2));
+    assert_eq!(all.50.default, 42);
 
-        let (inner, _) = unwrap_instance(&data, elements, 45);
-        match inner {
-            MarshalValue::Regex { pattern, flags } => {
-                assert_eq!(pattern.as_slice(), b"with flags");
-                // Ruby regex flags: IGNORECASE=1, EXTENDED=2, MULTILINE=4
-                assert_eq!(*flags, 1 | 2 | 4, "imx flags");
-            }
-            other => panic!("expected Regex at index 45, got {other:?}"),
-        }
-    }
+    // -- Object / Struct / Extended --
+    assert_eq!(all.51.class, "TestObject");
+    assert_eq!(all.51.fields, CountMap(2));
+    assert_eq!(all.52.class, "TestStruct");
+    let mut members: Vec<i32> = all.52.fields.values().copied().collect();
+    members.sort_unstable();
+    assert_eq!(members, vec![100, 200]);
+    let (extended, module) = all.53;
+    assert_eq!(module, "TestModule");
+    assert_eq!(extended.class, "TestObject");
+    assert_eq!(extended.fields, CountMap(2));
 
-    // -- Arrays (indices 46-47) --
-    match obj(&data, elements, 46) {
-        MarshalValue::Array(a) => assert_eq!(a.len(), 0, "empty array"),
-        other => panic!("expected empty Array at index 46, got {other:?}"),
-    }
-    match obj(&data, elements, 47) {
-        MarshalValue::Array(a) => {
-            assert_eq!(a.len(), 4, "array with 4 elements");
-            assert!(matches!(data.object(a[0]), MarshalValue::Fixnum(1)));
-            // a[1] is Instance-wrapped string "two"
-            match data.object(a[1]) {
-                MarshalValue::Instance { inner, .. } => {
-                    assert!(
-                        matches!(data.object(*inner), MarshalValue::String(s) if s.as_slice() == b"two")
-                    );
-                }
-                other => panic!("expected Instance(String) in array, got {other:?}"),
-            }
-            // a[2] is symbol :three (or SymbolLink if already seen)
-            assert!(
-                matches!(data.object(a[2]), MarshalValue::Symbol(s) if s.as_slice() == b"three")
-                    || matches!(data.object(a[2]), MarshalValue::SymbolLink(_))
-            );
-            assert!(matches!(data.object(a[3]), MarshalValue::Float(v) if *v == 4.0));
-        }
-        other => panic!("expected Array at index 47, got {other:?}"),
-    }
+    // -- Class / Module --
+    assert_eq!(all.54, "String");
+    assert_eq!(all.55, "Kernel");
 
-    // -- Hashes (indices 48-49) --
-    match obj(&data, elements, 48) {
-        MarshalValue::Hash(pairs) => assert_eq!(pairs.len(), 0, "empty hash"),
-        other => panic!("expected empty Hash at index 48, got {other:?}"),
-    }
-    match obj(&data, elements, 49) {
-        MarshalValue::Hash(pairs) => assert_eq!(pairs.len(), 3, "hash with 3 pairs"),
-        other => panic!("expected Hash at index 49, got {other:?}"),
-    }
+    // -- User serialization --
+    let (payload, class) = all.56.inner;
+    assert_eq!(class, "UserDefinedClass");
+    assert_eq!(payload, b"custom_payload");
+    let (values, class) = all.57;
+    assert_eq!(class, "UserMarshalClass");
+    assert_eq!(values, vec![10, 20, 30]);
+    let (string, class) = all.58.inner;
+    assert_eq!(class, "MyString");
+    assert_eq!(string, "subclassed string");
 
-    // -- HashDefault (index 50) --
-    match obj(&data, elements, 50) {
-        MarshalValue::HashDefault { pairs, default } => {
-            assert_eq!(pairs.len(), 2, "hash_default with 2 pairs");
-            assert!(
-                matches!(data.object(*default), MarshalValue::Fixnum(42)),
-                "default value should be 42"
-            );
-        }
-        other => panic!("expected HashDefault at index 50, got {other:?}"),
-    }
-
-    // -- Object (index 51) --
-    match obj(&data, elements, 51) {
-        MarshalValue::Object { class, ivars } => {
-            let class_name = data.symbol(*class).expect("class symbol");
-            assert_eq!(class_name.as_slice(), b"TestObject");
-            assert_eq!(ivars.len(), 2, "TestObject has 2 ivars");
-        }
-        other => panic!("expected Object at index 51, got {other:?}"),
-    }
-
-    // -- Struct (index 52) --
-    match obj(&data, elements, 52) {
-        MarshalValue::Struct { name, members } => {
-            let struct_name = data.symbol(*name).expect("struct name symbol");
-            assert_eq!(struct_name.as_slice(), b"TestStruct");
-            assert_eq!(members.len(), 2, "TestStruct has 2 members");
-            // Verify member values
-            assert!(matches!(
-                data.object(members[0].1),
-                MarshalValue::Fixnum(100)
-            ));
-            assert!(matches!(
-                data.object(members[1].1),
-                MarshalValue::Fixnum(200)
-            ));
-        }
-        other => panic!("expected Struct at index 52, got {other:?}"),
-    }
-
-    // -- Extended (index 53) --
-    match obj(&data, elements, 53) {
-        MarshalValue::Extended { module, inner } => {
-            let module_name = data.symbol(*module).expect("module symbol");
-            assert_eq!(module_name.as_slice(), b"TestModule");
-            // inner should be an Object (TestObject)
-            match data.object(*inner) {
-                MarshalValue::Object { class, ivars } => {
-                    let class_name = data.symbol(*class).expect("class symbol");
-                    assert_eq!(class_name.as_slice(), b"TestObject");
-                    assert_eq!(ivars.len(), 2);
-                }
-                other => panic!("expected Object inside Extended, got {other:?}"),
-            }
-        }
-        other => panic!("expected Extended at index 53, got {other:?}"),
-    }
-
-    // -- Class (index 54) --
-    match obj(&data, elements, 54) {
-        MarshalValue::Class(name) => assert_eq!(name.as_slice(), b"String"),
-        other => panic!("expected Class at index 54, got {other:?}"),
-    }
-
-    // -- Module (index 55) --
-    match obj(&data, elements, 55) {
-        MarshalValue::Module(name) => assert_eq!(name.as_slice(), b"Kernel"),
-        other => panic!("expected Module at index 55, got {other:?}"),
-    }
-
-    // -- UserDefined (index 56, Instance-wrapped) --
-    match obj(&data, elements, 56) {
-        MarshalValue::Instance { inner, .. } => match data.object(*inner) {
-            MarshalValue::UserDefined {
-                class,
-                data: payload,
-            } => {
-                let class_name = data.symbol(*class).expect("class symbol");
-                assert_eq!(class_name.as_slice(), b"UserDefinedClass");
-                assert_eq!(*payload, b"custom_payload");
-            }
-            other => panic!("expected UserDefined inside Instance at index 56, got {other:?}"),
-        },
-        other => panic!("expected Instance(UserDefined) at index 56, got {other:?}"),
-    }
-
-    // -- UserMarshal (index 57) --
-    match obj(&data, elements, 57) {
-        MarshalValue::UserMarshal { class, inner } => {
-            let class_name = data.symbol(*class).expect("class symbol");
-            assert_eq!(class_name.as_slice(), b"UserMarshalClass");
-            // inner should be an Array [10, 20, 30]
-            match data.object(*inner) {
-                MarshalValue::Array(a) => {
-                    assert_eq!(a.len(), 3);
-                    assert!(matches!(data.object(a[0]), MarshalValue::Fixnum(10)));
-                    assert!(matches!(data.object(a[1]), MarshalValue::Fixnum(20)));
-                    assert!(matches!(data.object(a[2]), MarshalValue::Fixnum(30)));
-                }
-                other => panic!("expected Array inside UserMarshal, got {other:?}"),
-            }
-        }
-        other => panic!("expected UserMarshal at index 57, got {other:?}"),
-    }
-
-    // -- UserString (index 58) --
-    // Ruby wraps this as Instance { inner: UserString { class, inner: String } }
-    match obj(&data, elements, 58) {
-        MarshalValue::Instance { inner, .. } => match data.object(*inner) {
-            MarshalValue::UserString { class, inner } => {
-                let class_name = data.symbol(*class).expect("class symbol");
-                assert_eq!(class_name.as_slice(), b"MyString");
-                match data.object(*inner) {
-                    MarshalValue::String(s) => {
-                        assert_eq!(s.as_slice(), b"subclassed string");
-                    }
-                    other => panic!("expected String inside UserString, got {other:?}"),
-                }
-            }
-            other => panic!("expected UserString inside Instance, got {other:?}"),
-        },
-        other => panic!("expected Instance(UserString) at index 58, got {other:?}"),
-    }
-
-    // -- ObjectReference (indices 59-60) --
-    // Index 59: first occurrence of "shared" (Instance-wrapped String)
-    assert_string(&data, elements, 59, b"shared");
-    // Index 60: second occurrence should be an ObjectRef pointing back to the same object
-    assert!(
-        matches!(obj(&data, elements, 60), MarshalValue::ObjectRef(_)),
-        "expected ObjectRef at index 60, got {:?}",
-        obj(&data, elements, 60)
-    );
+    // -- Object references --
+    // 60 is a `@` link back to the Instance-wrapped "shared" string at 59
+    assert_eq!(*all.59, "shared");
+    assert_eq!(*all.60, "shared");
 }

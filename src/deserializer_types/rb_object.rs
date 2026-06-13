@@ -1,7 +1,9 @@
-use std::ops::{Deref, DerefMut};
+use std::{
+    marker::PhantomData,
+    ops::{Deref, DerefMut},
+};
 
 use serde_core::de::{Deserializer, SeqAccess, Visitor};
-use std::marker::PhantomData;
 
 use super::ignored::Ignored;
 
@@ -41,14 +43,14 @@ where
             type Value = RbObject<T, N>;
 
             fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                f.write_str("a Ruby Object (2-element sequence: class name, ivars map)")
+                f.write_str("a Ruby Object (2-element sequence: ivars map, class name)")
             }
 
             fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
-                let class = seq
+                let fields = seq
                     .next_element()?
                     .ok_or_else(|| serde_core::de::Error::invalid_length(0, &self))?;
-                let fields = seq
+                let class = seq
                     .next_element()?
                     .ok_or_else(|| serde_core::de::Error::invalid_length(1, &self))?;
                 Ok(RbObject { class, fields })
