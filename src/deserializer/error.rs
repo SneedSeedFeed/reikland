@@ -71,11 +71,23 @@ pub(crate) enum ErrorKind {
         "cyclic or too-deep object reference chain (>{MAX_REF_DEPTH} hops) if you are hitting this one on data you know is good go open a github issue and cry at the maintainer plz"
     )]
     CyclicRef,
+    #[error(
+        "object ref {0} points to an object that contains it, and `Value` can't represent cycles"
+    )]
+    CyclicValue(i32),
+    #[error("values are nested more than {} deep", crate::value::MAX_DEPTH)]
+    TooDeep,
 }
 
 impl serde_core::de::Error for MarshalDeserializeError {
     fn custom<T: std::fmt::Display>(msg: T) -> Self {
         ErrorKind::Message(msg.to_string().into_boxed_str()).into()
+    }
+}
+
+impl From<std::convert::Infallible> for ErrorKind {
+    fn from(never: std::convert::Infallible) -> Self {
+        match never {}
     }
 }
 

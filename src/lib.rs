@@ -25,6 +25,10 @@
 //! I found the marshal format to have a good degree of desync between the "intended" and "literal" ways to deserialize a value in Rust. For example: An instance variable is basically just a `(T, HashMap<Symbol, Value>)` but in many cases you (the lovely person reading this) just want `T`.
 //! The [`DeserializerConfig`] passed to [`from_bytes_with_config`] decides which of those you get: with all flags off (the [`from_bytes`] default) nothing is lost and the wrapper types below can be used to get at the meat, while [`DeserializerConfig::opinionated`] flattens every wrapper into its useful contents so plain Rust types "just work", as in the example above.
 //!
+//! # Writing
+//!
+//! Serde only goes one way here. To change part of a file and write it back, read it as a [`Value`], and write it with [`Value::to_bytes`].
+//!
 //! # Wrapper types
 //!
 //! When deserializing strictly, these wrappers get at the "intended" value with less pain.
@@ -53,6 +57,7 @@ pub mod cursor;
 pub mod deserializer;
 pub mod deserializer_types;
 pub mod types;
+pub mod value;
 pub mod version_number;
 
 pub use deserializer::{
@@ -67,3 +72,4 @@ pub use types::{
     regex::RbRegexStr,
     string::{RbStr, RbString},
 };
+pub use value::{Body, Object, Symbol, Value};

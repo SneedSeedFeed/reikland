@@ -1,4 +1,3 @@
-use str_enum::phf;
 // pulled this from ruby version 3.4.8 then manually whittled away duplicates and renamed it all, it sucked and i wont do it again
 str_enum::str_enum!(
     #[phf]
